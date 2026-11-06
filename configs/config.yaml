@@ -1,0 +1,112 @@
+# ==============================================================================
+# Central Configuration: DR-GradCAM-Evaluation
+# Project: Evaluating Grad-CAM Explanations for Diabetic Retinopathy Grading
+# ==============================================================================
+
+project:
+  name: "DR-GradCAM-Evaluation"
+  version: "0.1.0"
+  random_seed: 42
+
+# ------------------------------------------------------------------------------
+# Dataset Paths & Structure (IDRiD)
+# ------------------------------------------------------------------------------
+dataset:
+  raw_dir: "data/raw/IDRiD"
+  processed_dir: "data/processed"
+  
+  # Disease Grading (516 images: 413 Train + 103 Test)
+  disease_grading:
+    train_images_dir: "data/raw/IDRiD/B. Disease Grading/B. Disease Grading/1. Original Images/a. Training Set"
+    test_images_dir: "data/raw/IDRiD/B. Disease Grading/B. Disease Grading/1. Original Images/b. Testing Set"
+    train_labels_file: "data/raw/IDRiD/B. Disease Grading/B. Disease Grading/2. Groundtruths/a. IDRiD_Disease Grading_Training Labels.csv"
+    test_labels_file: "data/raw/IDRiD/B. Disease Grading/B. Disease Grading/2. Groundtruths/b. IDRiD_Disease Grading_Testing Labels.csv"
+    
+    # Column mapping in IDRiD CSVs
+    image_id_col: "Image name"
+    grade_col: "Retinopathy grade"
+    dme_col: "Risk of macular edema "
+
+  # Segmentation (81 images with pixel-level lesion annotations: 54 Train + 27 Test)
+  segmentation:
+    images_dir: "data/raw/IDRiD/A. Segmentation/A. Segmentation/1. Original Images"
+    train_images_dir: "data/raw/IDRiD/A. Segmentation/A. Segmentation/1. Original Images/a. Training Set"
+    test_images_dir: "data/raw/IDRiD/A. Segmentation/A. Segmentation/1. Original Images/b. Testing Set"
+    masks_root_dir: "data/raw/IDRiD/A. Segmentation/A. Segmentation/2. All Segmentation Groundtruths"
+    train_masks_dir: "data/raw/IDRiD/A. Segmentation/A. Segmentation/2. All Segmentation Groundtruths/a. Training Set"
+    test_masks_dir: "data/raw/IDRiD/A. Segmentation/A. Segmentation/2. All Segmentation Groundtruths/b. Testing Set"
+    
+    lesion_types:
+      microaneurysms:
+        code: "MA"
+        subdir: "1. Microaneurysms"
+      haemorrhages:
+        code: "HE"
+        subdir: "2. Haemorrhages"
+      hard_exudates:
+        code: "EX"
+        subdir: "3. Hard Exudates"
+      soft_exudates:
+        code: "SE"
+        subdir: "4. Soft Exudates"
+      optic_disc:
+        code: "OD"
+        subdir: "5. Optic Disc"
+
+# ------------------------------------------------------------------------------
+# Image Preprocessing & Augmentation
+# ------------------------------------------------------------------------------
+preprocessing:
+  image_size: [512, 512]
+  crop_black_borders: true
+  circular_fov_mask: true
+  normalization:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+
+# ------------------------------------------------------------------------------
+# CNN Model Specifications
+# ------------------------------------------------------------------------------
+model:
+  backbone: "resnet50"             # Primary: resnet50; Secondary: efficientnet_b0
+  pretrained: true
+  num_classes: 5                  # ICDR Grades 0, 1, 2, 3, 4
+  dropout_rate: 0.3
+  target_conv_layer: "layer4"     # ResNet-50 final convolutional block
+
+# ------------------------------------------------------------------------------
+# Explainability (Grad-CAM)
+# ------------------------------------------------------------------------------
+explainability:
+  method: "Grad-CAM"
+  percentile_thresholds: [0.05, 0.10, 0.20]   # Top 5%, 10%, 20% salient activation cuts
+  baseline_threshold: 0.10                    # Primary reporting cutoff (top 10%)
+
+# ------------------------------------------------------------------------------
+# Faithfulness (Deletion Test)
+# ------------------------------------------------------------------------------
+faithfulness:
+  deletion_steps: [0.10, 0.20, 0.30]          # Progressive salient deletion percentages
+  fill_strategies:
+    - "black"                                 # Primary (0, 0, 0)
+    - "gaussian_blur"                         # Neutral control for OOD edge boundary check
+  random_control:
+    enabled: true
+    num_random_trials: 5                      # Number of random baseline masks per step
+
+# ------------------------------------------------------------------------------
+# Statistical Analysis & Reproducibility
+# ------------------------------------------------------------------------------
+statistics:
+  correlation_metric: "spearman"
+  bootstrap_iterations: 1000
+  confidence_level: 0.95
+  min_samples_per_grade: 5                    # Minimum N to report grade-wise correlation
+
+# ------------------------------------------------------------------------------
+# Output Directories
+# ------------------------------------------------------------------------------
+outputs:
+  reports_dir: "reports"
+  checkpoints_dir: "experiments/checkpoints"
+  visualizations_dir: "experiments/visualizations"

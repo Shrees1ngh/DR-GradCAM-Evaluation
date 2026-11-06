@@ -1,0 +1,81 @@
+# IDRiD Dataset Audit Report — Phase 1
+
+> **Project:** DR-GradCAM-Evaluation  
+> **Objective:** Verification of Image Integrity, Label Distribution, Mask Availability, Alignment, and Leakage  
+
+---
+
+## 1. Executive Summary
+
+**Status:** `DATASET VERIFIED` ✅
+
+- **Dataset Root:** `C:\Projects\DR-GradCAM-Evaluation\data\raw\IDRiD`
+- **Total Grading Images:** 516 (Train: 413, Test: 103)
+- **Total Segmentation Images:** 81 (Train: 54, Test: 27)
+- **Total Segmentation Masks:** 363 masks across 5 structures
+- **Corrupted Files Detected:** 0 (Zero corruption)
+
+## 2. Image Files & Integrity
+
+| Subset | Found | Valid | Corrupted | Resolution | Color Mode | Aspect Ratio |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Grading (Training Set) | 413 | 413 | 0 | 4288x2848 | RGB | 3:2 |
+| Grading (Testing Set) | 103 | 103 | 0 | 4288x2848 | RGB | 3:2 |
+| Segmentation (Combined) | 81 | 81 | 0 | 4288x2848 | RGB | 3:2 |
+
+## 3. Disease Grading Class Distribution (ICDR Scale)
+
+| ICDR Grade | Clinical Diagnosis | Training Set | Testing Set | Combined Total | Combined % | Clinical Severity |
+| :---: | :--- | :---: | :---: | :---: | :---: | :--- |
+| **Grade 0** | No DR | 134 | 34 | 168 | **32.6%** | Healthy / Non-referable |
+| **Grade 1** | Mild NPDR | 20 | 5 | 25 | **4.8%** | Microaneurysms only (Non-referable) |
+| **Grade 2** | Moderate NPDR | 136 | 32 | 168 | **32.6%** | Referable DR |
+| **Grade 3** | Severe NPDR | 74 | 19 | 93 | **18.0%** | Referable DR (High Risk) |
+| **Grade 4** | Proliferative DR (PDR) | 49 | 13 | 62 | **12.0%** | Sight-Threatening (Immediate Care) |
+| **Total** | — | 413 | 103 | 516 | **100.0%** | — |
+
+> **Key Observation on Class Distribution:**
+> 1. **Grade 1 (Mild) is extremely scarce:** Only 25 images total (4.8% of dataset: 20 train, 5 test). Class weighting / focal loss or stratified sampling must be considered in Phase 3.
+> 2. **Grade 0 and Grade 2 dominate:** Grade 0 (32.6%) and Grade 2 (32.6%) represent ~65% of the entire dataset.
+
+## 4. Segmentation Lesion Masks Availability & Integrity
+
+- **Total Segmentation Images:** 81 (54 Training + 27 Testing)
+- **Mask Dimension Alignment:** 100% verified (All masks match image size 4288x2848)
+- **Corrupted Masks:** 0
+
+| Lesion Type | Clinical Code | Total Masks | Train Split | Test Split | Missing / Absent Cases | Clinical Interpretation |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| Microaneurysms | `MA` | 81 / 81 | 54 | 27 | 0 | Present in all 81 segmentation images |
+| Haemorrhages | `HE` | 80 / 81 | 53 | 27 | 1 (`IDRiD_43`) | Single case without haemorrhages |
+| Hard Exudates | `EX` | 81 / 81 | 54 | 27 | 0 | Present in all 81 segmentation images |
+| Soft Exudates | `SE` | 40 / 81 | 26 | 14 | 41 images | Absence signifies zero soft exudates (cotton wool spots) |
+| Optic Disc | `OD` | 81 / 81 | 54 | 27 | 0 | Normal anatomical landmark (used as negative control) |
+
+### Lesion Mask Notes:
+- Haemorrhages: 80 masks found (Train: 53, Test: 27). Image IDRiD_43 lacks HE, indicating 0 haemorrhage lesions.
+- Soft Exudates: 40 masks found (Train: 26, Test: 14). 41 images lack SE masks, indicating absence of soft exudates (cotton wool spots).
+
+## 5. Cross-Subset Overlap, Identifiers & Data Leakage Analysis
+
+### 5.1 Image Identifier Sequence Collision
+- Note: IDRiD test set reuses numbering IDRiD_001 to IDRiD_103. However, file hashes and labels confirm they are completely distinct images stored in separate directories. They must be indexed with split prefixes (e.g. 'train/IDRiD_001' vs 'test/IDRiD_001') to avoid collisions.
+
+### 5.2 Patient Identifier Availability
+- **Patient IDs Provided:** `False`
+- The IDRiD ground-truth CSVs contain only `Image name`, `Retinopathy grade`, and `Risk of macular edema `.
+- No patient identifiers, eye indicators (left/right OD/OS), or clinical demographic metadata are available.
+- Consequently, patient-level cluster leakage cannot be verified through metadata.
+
+### 5.3 Segmentation-to-Grading Cohort Alignment
+- Visual similarity analysis revealed the relationship between the 81 Segmentation images and the 516 Disease Grading images:
+  - **62 images** visually correspond to images in the **Disease Grading Training Set** (`a. Training Set`).
+  - **2 images** visually correspond to images in the **Disease Grading Testing Set** (`b. Testing Set`).
+  - **17 images** are unique to the segmentation set (not in the grading split).
+
+> [!IMPORTANT]
+> **Methodological Implication for Phase 6 (Localization):**
+> Because 62 of the 81 segmentation images originate from the Disease Grading Training split, evaluating Grad-CAM localization on those images measures explanation fidelity on *training-distribution* images. In Phase 6, we must explicitly distinguish localization performance on held-out test segmentation images (2 images) vs training segmentation images (62 images), and clearly report this in the research manuscript.
+
+---
+*Report auto-generated by `scripts/audit_dataset.py` as part of Phase 1.*
