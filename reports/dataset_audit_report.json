@@ -758,15 +758,77 @@
     "seg_in_grading_train": 81,
     "seg_in_grading_test": 0,
     "seg_unmatched_ids": [],
-    "visual_match_train_count": 62,
-    "visual_match_test_count": 2,
-    "visual_match_unique_seg": 17,
+    "visual_match_train_count": 57,
+    "visual_match_test_count": 3,
+    "visual_match_unique_seg": 21,
     "name_collision_note": "Note: IDRiD test set reuses numbering IDRiD_001 to IDRiD_103. However, file hashes and labels confirm they are completely distinct images stored in separate directories. They must be indexed with split prefixes (e.g. 'train/IDRiD_001' vs 'test/IDRiD_001') to avoid collisions.",
     "patient_metadata_available": false,
     "leakage_risk_detected": false,
     "leakage_notes": [
       "Patient identifiers: NOT provided in official IDRiD ground-truth CSVs. Images are sequential anonymous identifiers (IDRiD_XXX). Patient-level grouping cannot be inferred from metadata.",
-      "Segmentation-to-Grading mapping: 62 of 81 segmentation images visually correspond to images in the Disease Grading Training Set, 2 correspond to the Testing Set, and 17 are unique to the segmentation cohort. Critical for Phase 6: Localization evaluation on these 62 images must be documented as evaluating on images present in the grading training cohort."
+      "Segmentation-to-Grading mapping: 57 of 81 segmentation images visually correspond to images in the Disease Grading Training Set, 3 correspond to the Testing Set, and 21 are unique to the segmentation cohort. Critical for Phase 6: Localization evaluation on these 57 images must be documented as evaluating on images present in the grading training cohort."
+    ]
+  },
+  "aptos": {
+    "dataset_found": true,
+    "dataset_root": "C:\\Projects\\DR-GradCAM-Evaluation\\data\\raw\\APTOS",
+    "csv_file": "C:\\Projects\\DR-GradCAM-Evaluation\\data\\raw\\APTOS\\train.csv",
+    "images_dir": "C:\\Projects\\DR-GradCAM-Evaluation\\data\\raw\\APTOS\\train_images",
+    "total_csv_rows": 3662,
+    "total_disk_images": 3662,
+    "missing_images_count": 0,
+    "missing_image_ids": [],
+    "extra_disk_images_count": 0,
+    "duplicate_csv_ids": [],
+    "duplicate_disk_files": [],
+    "unreadable_images_count": 0,
+    "unreadable_files": [],
+    "distribution": {
+      "grade_counts": {
+        "0": 1805,
+        "1": 370,
+        "2": 999,
+        "3": 193,
+        "4": 295
+      },
+      "grade_percentages": {
+        "0": 49.29,
+        "1": 10.1,
+        "2": 27.28,
+        "3": 5.27,
+        "4": 8.06
+      },
+      "total_labeled": 3662,
+      "missing_grades": 0,
+      "invalid_grades": []
+    },
+    "resolutions": {
+      "3216x2136": 410,
+      "2416x1736": 638,
+      "1050x1050": 974,
+      "2048x1536": 351,
+      "3388x2588": 141,
+      "2588x1958": 533,
+      "819x614": 287,
+      "1504x1000": 92,
+      "1844x1226": 61,
+      "4288x2848": 52,
+      "640x480": 42,
+      "2896x1944": 34,
+      "2144x1424": 28,
+      "1476x1117": 14,
+      "474x358": 2,
+      "2146x1764": 1,
+      "1467x1110": 2
+    },
+    "color_modes": {
+      "RGB": 3662
+    },
+    "formats": {
+      "PNG": 3662
+    },
+    "notes": [
+      "APTOS audit completed: 3662 images verified. Zero corrupted files. 1:1 match with CSV rows (3662). 17 distinct image resolutions identified."
     ]
   },
   "warnings": [],

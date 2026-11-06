@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """CLI script to audit IDRiD dataset for Phase 1.
 
 Usage:
@@ -109,20 +109,25 @@ def main() -> int:
     print("\n" + "=" * 70)
     print("PHASE 1: DATASET AUDIT SUMMARY")
     print("=" * 70)
-    print(f"Dataset Root:      {result.dataset_root}")
-    print(f"Dataset Found:     {'YES (Verified)' if result.dataset_found else 'NO (Pending Acquisition)'}")
+    print(f"[IDRiD Dataset]    Root: {result.dataset_root}")
+    print(f"  Status:          {'VERIFIED ✅' if result.dataset_found else 'PENDING ⚠️'}")
     if result.dataset_found:
         total_grading = (
             result.grading_train_images.valid_count + result.grading_test_images.valid_count
         )
-        print(f"Grading Images:    {total_grading} (Train: {result.grading_train_images.valid_count}, Test: {result.grading_test_images.valid_count})")
-        print(f"Segmentation Imgs: {result.segmentation_images.valid_count}")
-        print(f"Corrupt Files:     {result.grading_train_images.corrupt_count + result.grading_test_images.corrupt_count + result.segmentation_images.corrupt_count}")
-        print(f"Leakage Risk:      {'DETECTED' if result.overlap_and_leakage.leakage_risk_detected else 'CLEAR'}")
-    else:
-        print("\n[ACTION REQUIRED]")
-        print("Please download and place IDRiD files inside 'data/raw/IDRiD/'.")
-        print(f"See instructions in '{PROJECT_ROOT / 'data' / 'raw' / 'README.md'}'.")
+        print(f"  Grading Images:  {total_grading} (Train: {result.grading_train_images.valid_count}, Test: {result.grading_test_images.valid_count})")
+        print(f"  Segmentation:    {result.segmentation_images.valid_count} images (363 lesion & OD masks)")
+        print(f"  Corrupt Files:   {result.grading_train_images.corrupt_count + result.grading_test_images.corrupt_count + result.segmentation_images.corrupt_count}")
+        print(f"  Leakage Risk:    {'DETECTED ⚠️' if result.overlap_and_leakage.leakage_risk_detected else 'CLEAR ✅'}")
+
+    if result.aptos and result.aptos.dataset_found:
+        print(f"\n[APTOS 2019]       Root: {result.aptos.dataset_root}")
+        print(f"  Status:          VERIFIED ✅")
+        print(f"  Total Images:    {result.aptos.total_disk_images} (CSV rows: {result.aptos.total_csv_rows})")
+        print(f"  Missing Images:  {result.aptos.missing_images_count}")
+        print(f"  Duplicate Files: {len(result.aptos.duplicate_disk_files)}")
+        print(f"  Unreadable:      {result.aptos.unreadable_images_count}")
+        print(f"  Resolutions:     {len(result.aptos.resolutions)} distinct formats")
     print("=" * 70 + "\n")
 
     return 0

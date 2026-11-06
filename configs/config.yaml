@@ -53,6 +53,14 @@ dataset:
         code: "OD"
         subdir: "5. Optic Disc"
 
+  # APTOS 2019 Blindness Detection Dataset (3,662 images)
+  aptos:
+    raw_dir: "data/raw/APTOS"
+    images_dir: "data/raw/APTOS/train_images"
+    labels_file: "data/raw/APTOS/train.csv"
+    image_id_col: "id_code"
+    grade_col: "diagnosis"
+
 # ------------------------------------------------------------------------------
 # Image Preprocessing & Augmentation
 # ------------------------------------------------------------------------------

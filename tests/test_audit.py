@@ -159,7 +159,61 @@ def test_audit_synthetic_dataset(mock_idrid_dataset: Path, tmp_path: Path):
 
     # Markdown generation check
     md = generate_markdown_report(result)
-    assert "DATASET VERIFIED" in md
+    assert "VERIFIED ✅" in md
     assert "Grade 0" in md
     assert "Microaneurysms" in md
+
+
+def test_audit_aptos_synthetic(tmp_path: Path):
+    """Test auditing APTOS dataset on synthetic folder structure."""
+    aptos_root = tmp_path / "APTOS"
+    img_dir = aptos_root / "train_images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create 3 valid PNG images and 1 corrupt image
+    for i in range(1, 4):
+        img = Image.new("RGB", (64, 64), color=(i * 30, i * 40, i * 50))
+        img.save(img_dir / f"img_{i:03d}.png")
+
+    corrupt_f = img_dir / "img_004.png"
+    corrupt_f.touch()
+
+    # Create train.csv with 4 rows (1 matching the corrupt image)
+    df = pd.DataFrame({
+        "id_code": [f"img_{i:03d}" for i in range(1, 5)],
+        "diagnosis": [0, 1, 2, 4],
+    })
+    df.to_csv(aptos_root / "train.csv", index=False)
+
+    config = {
+        "dataset": {
+            "raw_dir": str(tmp_path / "non_existent_idrid"),
+            "processed_dir": str(tmp_path / "processed"),
+            "aptos": {
+                "raw_dir": str(aptos_root),
+                "images_dir": str(img_dir),
+                "labels_file": str(aptos_root / "train.csv"),
+            },
+        }
+    }
+
+    auditor = DatasetAuditor(config=config, project_root=tmp_path)
+    result = auditor.run_audit()
+
+    assert result.aptos is not None
+    assert result.aptos.dataset_found
+    assert result.aptos.total_csv_rows == 4
+    assert result.aptos.total_disk_images == 4
+    assert result.aptos.unreadable_images_count == 1
+    assert "img_004.png" in result.aptos.unreadable_files
+    assert result.aptos.distribution.total_labeled == 4
+    assert result.aptos.distribution.grade_counts[0] == 1
+    assert result.aptos.distribution.grade_counts[1] == 1
+    assert result.aptos.distribution.grade_counts[2] == 1
+    assert result.aptos.distribution.grade_counts[4] == 1
+
+    md = generate_markdown_report(result)
+    assert "APTOS 2019 Dataset Audit" in md
+    assert "Cross-Dataset Comparison" not in md  # IDRiD is missing here
+
 

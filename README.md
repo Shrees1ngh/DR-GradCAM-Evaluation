@@ -53,16 +53,22 @@ DR-GradCAM-Evaluation/
 │   └── visualizations/             # Generated Grad-CAM overlays & figures (git-ignored)
 ├── notebooks/                      # Colab/Jupyter research exploration notebooks
 ├── reports/
-│   ├── dataset_audit_report.md     # Phase 1 dataset audit markdown findings
-│   └── dataset_audit_report.json   # Machine-readable audit metrics
+│   ├── dataset_audit_report.md     # Multi-dataset audit findings (IDRiD + APTOS)
+│   ├── dataset_audit_report.json   # Machine-readable audit metrics
+│   ├── idrid_seg_grading_matches.json # Empirical IDRiD segmentation-to-grading alignment
+│   └── preprocessing_report.md     # Phase 2 preprocessing and split stratification report
 ├── scripts/
-│   └── audit_dataset.py            # CLI entrypoint for Phase 1 dataset audit
+│   ├── audit_dataset.py            # CLI entrypoint for dataset audit
+│   └── preprocess_data.py          # Phase 2 preprocessing and split generator
 ├── src/
 │   ├── __init__.py                 # Core package init
-│   └── audit.py                    # Modular dataset verification & leakage detection logic
+│   ├── audit.py                    # Multi-dataset verification & leakage detection logic
+│   ├── dataset.py                  # PyTorch Datasets (DRGradingDataset, SegmentationLesionDataset)
+│   └── preprocessing.py            # Aspect-ratio preserving resizing, padding, mask alignment
 ├── tests/
 │   ├── __init__.py
-│   └── test_audit.py               # Unit and integration test suite
+│   ├── test_audit.py               # Dataset audit test suite (IDRiD & APTOS)
+│   └── test_preprocessing.py       # Preprocessing & spatial mask alignment test suite
 ├── .gitignore                      # Git exclusion rules
 ├── requirements.txt                # Pinned dependencies
 └── README.md                       # Research specification & documentation
