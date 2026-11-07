@@ -13,8 +13,8 @@
 - **Primary Training Set (APTOS 80%):** 2929 images
 - **Primary Validation Set (APTOS 20%):** 733 images
 - **External Test Benchmark (IDRiD):** 103 images
-- **External Training Cohort (IDRiD):** 413 images (Kept separate from primary training)
-- **Localization Benchmark (IDRiD):** 81 images (with aligned expert lesion masks)
+- **External Training Cohort (IDRiD):** 413 images (Kept separate; not used for primary training)
+- **Localization Benchmark (IDRiD):** 81 images (100% UNSEEN by primary model)
 
 ## 2. Primary Classification Backbone: APTOS 2019 Split Balance
 
@@ -27,17 +27,31 @@
 | **Grade 4** | Proliferative DR (PDR) | 236 | 59 | 295 | 8.1% | 8.0% |
 | **Total** | — | **2929** | **733** | **3662** | **100.0%** | **100.0%** |
 
-## 3. IDRiD External Benchmarks Structure
+## 3. IDRiD Segmentation Cohort & Lesion Masks
 
-- **IDRiD Grading External Test Set:** 103 images (Official challenge test set).
-- **IDRiD Grading External Train Set:** 413 images (Preserved intact for secondary/fine-tuning experiments).
-- **IDRiD Segmentation Set:** 81 images with aligned binary masks:
-  - Microaneurysms (`MA`): 81 annotated
-  - Haemorrhages (`HE`): 80 annotated (1 unannotated: `IDRiD_43`)
-  - Hard Exudates (`EX`): 81 annotated
-  - Soft Exudates (`SE`): 40 annotated (41 unannotated)
-  - Optic Disc (`OD`): 81 annotated (landmark control)
-  - Composite Lesion Mask: `Composite = MA ∪ HE ∪ EX ∪ SE`
+> [!IMPORTANT]
+> **Model Independence Guarantee:** Our primary CNN is trained SOLELY on APTOS 2019.
+> Therefore, **ALL 81 IDRiD segmentation images are 100% unseen by the model**.
+> The 57 images originating from IDRiD's grading training set must NOT be described as
+> 'model training-distribution images'. They are documented as `idrid_grading_train_cohort`.
+
+### Cohort Origin Breakdown
+- `idrid_grading_train_cohort`: **57** images (Overlap with IDRiD's own grading train set)
+- `idrid_grading_test_cohort`: **3** images (Overlap with IDRiD's own grading test set)
+- `idrid_seg_unique`: **21** images (Unique to IDRiD segmentation)
+- **Model Seen Status:** 100% marked as `unseen`.
+
+### Lesion Mask Annotation Availability vs. Absence
+
+| Lesion Type | Annotated Files Present | Missing Annotation Files | All-Zero Annotated Masks | Non-Zero Lesion Masks |
+| :--- | :---: | :---: | :---: | :---: |
+| **MA** (Microaneurysms) | 81 | 0 | 0 | 81 |
+| **HE** (Haemorrhages) | 80 | 1 | 0 | 80 |
+| **EX** (Hard Exudates) | 81 | 0 | 0 | 81 |
+| **SE** (Soft Exudates) | 40 | 41 | 0 | 40 |
+| **OD** (Optic Disc (landmark control)) | 81 | 0 | 0 | 81 |
+
+- **Composite Lesion Mask:** Union of `MA ∪ HE ∪ EX ∪ SE` (Optic Disc strictly excluded).
 
 ## 4. Zero-Leakage & Integrity Verification
 
@@ -45,7 +59,7 @@
 - APTOS sample count conserved: 2929 train + 733 val = 3,662.
 - IDRiD external test set preserved intact: 103 images.
 
-## 5. Processed Artifact Manifests
+## 5. Processed Manifests
 
 - `data/processed/aptos/train_split.csv` ($N=2,929$)
 - `data/processed/aptos/val_split.csv` ($N=733$)

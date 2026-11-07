@@ -139,3 +139,70 @@ def test_dr_grading_dataset(tmp_path: Path):
     item1 = ds[1]
     assert item1["grade"] == 3
     assert item1["image_id"] == "APTOS_002"
+
+
+def test_segmentation_lesion_dataset(tmp_path: Path):
+    """Verify SegmentationLesionDataset handles cohort origin and missing vs zero masks."""
+    torch = pytest.importorskip("torch")
+    torchvision = pytest.importorskip("torchvision")
+    from src.dataset import SegmentationLesionDataset
+
+    # Create dummy image and masks
+    img = Image.fromarray(np.ones((512, 512, 3), dtype=np.uint8) * 128)
+    p_img = tmp_path / "IDRiD_01.jpg"
+    img.save(p_img)
+
+    # MA mask has lesions
+    mask_ma = Image.fromarray(np.ones((512, 512), dtype=np.uint8) * 255)
+    p_ma = tmp_path / "IDRiD_01_MA.png"
+    mask_ma.save(p_ma)
+
+    # HE mask exists but is all-zero (lesion absent)
+    mask_he = Image.fromarray(np.zeros((512, 512), dtype=np.uint8))
+    p_he = tmp_path / "IDRiD_01_HE.png"
+    mask_he.save(p_he)
+
+    # SE mask is missing (annotated=False)
+    p_se = tmp_path / "IDRiD_01_SE.png"  # does not exist
+
+    df = pd.DataFrame([{
+        "image_id": "idrid/seg/IDRiD_01",
+        "image_path": str(p_img),
+        "mask_MA": str(p_ma),
+        "annotated_MA": True,
+        "pixel_count_MA": 500,
+        "mask_HE": str(p_he),
+        "annotated_HE": True,
+        "pixel_count_HE": 0,  # All-zero annotated mask
+        "mask_EX": "",
+        "annotated_EX": False,
+        "pixel_count_EX": -1,
+        "mask_SE": str(p_se),
+        "annotated_SE": False,  # Missing annotation file
+        "pixel_count_SE": -1,
+        "mask_OD": "",
+        "annotated_OD": False,
+        "pixel_count_OD": -1,
+        "mask_composite": "",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "model_seen_status": "unseen",
+        "grading_match_id": "IDRiD_102.jpg",
+    }])
+
+    ds = SegmentationLesionDataset(manifest_df=df, project_root=tmp_path)
+    assert len(ds) == 1
+    sample = ds[0]
+
+    assert sample["cohort_origin"] == "idrid_grading_train_cohort"
+    assert sample["model_seen_status"] == "unseen"
+    assert sample["annotation_status"]["MA"] is True
+    assert sample["annotation_status"]["HE"] is True
+    assert sample["annotation_status"]["SE"] is False
+
+    # MA has positive pixels
+    assert torch.sum(sample["masks"]["MA"]).item() > 0
+    # HE is all-zero mask
+    assert torch.sum(sample["masks"]["HE"]).item() == 0
+    # SE is zero mask because missing
+    assert torch.sum(sample["masks"]["SE"]).item() == 0
+

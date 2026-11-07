@@ -1,12 +1,16 @@
 """PyTorch Dataset implementations and DataLoader builders for Diabetic Retinopathy.
 
-Provides DRGradingDataset for 5-class ICDR classification (APTOS & IDRiD) and
-SegmentationLesionDataset for the 81 IDRiD lesion-annotated images.
+Provides:
+- DRGradingDataset: 5-class ICDR classification (APTOS 2019 & IDRiD external benchmarks)
+- SegmentationLesionDataset: IDRiD 81 lesion-annotated images with multi-lesion masks
+- SynchronizedJointTransform: Synchronous spatial transforms for paired image and masks
+- build_dataloaders: DataLoader construction with reproducible batching and split handling
 """
 
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -18,12 +22,14 @@ try:
     import torch
     from torch.utils.data import DataLoader, Dataset
     from torchvision import transforms
+    import torchvision.transforms.functional as TF
     TORCH_AVAILABLE = True
 except ImportError:
     torch = None
     DataLoader = None
     Dataset = object
     transforms = None
+    TF = None
     TORCH_AVAILABLE = False
 
 logger = logging.getLogger("dataset")
@@ -37,6 +43,9 @@ def get_default_transforms(
     image_size: Tuple[int, int] = (512, 512),
 ):
     """Build torchvision transformation pipeline for train, val, or test splits.
+
+    Applied to classification images. Augmentations are applied only to 'train';
+    'val' and 'test' splits are strictly deterministic.
 
     Args:
         split: One of 'train', 'val', 'test'.
@@ -65,6 +74,75 @@ def get_default_transforms(
             transforms.ToTensor(),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ])
+
+
+class SynchronizedJointTransform:
+    """Synchronous spatial augmentation for paired image and segmentation masks.
+
+    Applies identical random spatial transformations (horizontal flip, vertical flip,
+    affine rotation) to both the fundus image and all corresponding lesion masks.
+    Uses nearest-neighbor interpolation on masks to strictly preserve binary {0, 1} values.
+    Photometric jitter is applied strictly to the image, never to the masks.
+
+    Applied exclusively to training data; never to validation or test data.
+    """
+
+    def __init__(
+        self,
+        hflip_p: float = 0.5,
+        vflip_p: float = 0.5,
+        rotation_degrees: float = 15.0,
+        brightness_jitter: float = 0.1,
+        contrast_jitter: float = 0.1,
+    ):
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch and torchvision are required.")
+        self.hflip_p = hflip_p
+        self.vflip_p = vflip_p
+        self.rotation_degrees = rotation_degrees
+        self.brightness_jitter = brightness_jitter
+        self.contrast_jitter = contrast_jitter
+
+    def __call__(
+        self, image: Image.Image, masks: Dict[str, Image.Image]
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Apply synchronous transform to PIL Image and dict of PIL mask images."""
+        # 1. Random horizontal flip
+        if random.random() < self.hflip_p:
+            image = TF.hflip(image)
+            masks = {k: TF.hflip(m) for k, m in masks.items()}
+
+        # 2. Random vertical flip
+        if random.random() < self.vflip_p:
+            image = TF.vflip(image)
+            masks = {k: TF.vflip(m) for k, m in masks.items()}
+
+        # 3. Random rotation
+        if self.rotation_degrees > 0:
+            angle = random.uniform(-self.rotation_degrees, self.rotation_degrees)
+            image = TF.rotate(image, angle, interpolation=transforms.InterpolationMode.BILINEAR)
+            masks = {
+                k: TF.rotate(m, angle, interpolation=transforms.InterpolationMode.NEAREST)
+                for k, m in masks.items()
+            }
+
+        # 4. Color jitter strictly for image
+        if self.brightness_jitter > 0 or self.contrast_jitter > 0:
+            b_factor = random.uniform(1.0 - self.brightness_jitter, 1.0 + self.brightness_jitter)
+            c_factor = random.uniform(1.0 - self.contrast_jitter, 1.0 + self.contrast_jitter)
+            image = TF.adjust_brightness(image, b_factor)
+            image = TF.adjust_contrast(image, c_factor)
+
+        # 5. Convert to Tensors and normalize image
+        tensor_img = TF.to_tensor(image)
+        norm_img = TF.normalize(tensor_img, mean=IMAGENET_MEAN, std=IMAGENET_STD)
+
+        tensor_masks = {
+            k: (torch.from_numpy(np.array(m)) > 0).float()
+            for k, m in masks.items()
+        }
+
+        return norm_img, tensor_masks
 
 
 class DRGradingDataset(Dataset):
@@ -132,7 +210,16 @@ class DRGradingDataset(Dataset):
 
 
 class SegmentationLesionDataset(Dataset):
-    """PyTorch Dataset for the 81 IDRiD segmentation images and their multi-lesion masks."""
+    """PyTorch Dataset for the 81 IDRiD segmentation images and their multi-lesion masks.
+
+    Metadata preserves cohort origin:
+    - 'idrid_grading_train_cohort' (57 images)
+    - 'idrid_grading_test_cohort' (3 images)
+    - 'idrid_seg_unique' (21 images)
+
+    Note: All 81 images are strictly UNSEEN by the primary classification model,
+    which is trained exclusively on APTOS 2019.
+    """
 
     LESION_CODES = ["MA", "HE", "EX", "SE", "OD"]
 
@@ -141,17 +228,19 @@ class SegmentationLesionDataset(Dataset):
         manifest_df: pd.DataFrame,
         project_root: Optional[Path] = None,
         transform: Optional[Callable] = None,
+        joint_transform: Optional[SynchronizedJointTransform] = None,
     ):
         """
         Args:
-            manifest_df: DataFrame with columns 'image_id', 'image_path', and mask path columns
-                         ('mask_MA', 'mask_HE', 'mask_EX', 'mask_SE', 'mask_OD', 'mask_composite').
+            manifest_df: DataFrame with image and mask paths.
             project_root: Project root path to resolve relative file paths.
             transform: Image transformation pipeline (Normalize).
+            joint_transform: Synchronized joint spatial transform (training only).
         """
         self.manifest = manifest_df.reset_index(drop=True)
         self.project_root = project_root or Path.cwd()
         self.transform = transform
+        self.joint_transform = joint_transform
 
     def __len__(self) -> int:
         return len(self.manifest)
@@ -163,17 +252,14 @@ class SegmentationLesionDataset(Dataset):
         img_path = p if p.is_absolute() else (self.project_root / p).resolve()
 
         with Image.open(img_path) as pil_img:
-            raw_rgb = np.array(pil_img.convert("RGB"), dtype=np.uint8)
+            pil_rgb = pil_img.convert("RGB")
+            raw_rgb = np.array(pil_rgb, dtype=np.uint8)
 
         h, w = raw_rgb.shape[:2]
 
-        if self.transform is not None:
-            tensor_img = self.transform(raw_rgb)
-        else:
-            tensor_img = transforms.functional.to_tensor(raw_rgb)
-
-        masks: Dict[str, torch.Tensor] = {}
+        pil_masks: Dict[str, Image.Image] = {}
         annotation_status: Dict[str, bool] = {}
+        pixel_counts: Dict[str, int] = {}
 
         for code in self.LESION_CODES:
             col_name = f"mask_{code}"
@@ -181,35 +267,47 @@ class SegmentationLesionDataset(Dataset):
 
             is_annotated = bool(row.get(annotated_col, True))
             annotation_status[code] = is_annotated
+            pixel_counts[code] = int(row.get(f"pixel_count_{code}", -1 if not is_annotated else 0))
 
             mask_path_str = row.get(col_name)
             if pd.notna(mask_path_str) and mask_path_str:
                 mp = Path(str(mask_path_str))
                 full_mask_path = mp if mp.is_absolute() else (self.project_root / mp).resolve()
                 if full_mask_path.exists():
-                    with Image.open(full_mask_path) as m_img:
-                        m_arr = (np.array(m_img) > 0).astype(np.float32)
-                    masks[code] = torch.tensor(m_arr, dtype=torch.float32)
+                    pil_masks[code] = Image.open(full_mask_path).convert("L")
                 else:
-                    masks[code] = torch.zeros((h, w), dtype=torch.float32)
+                    pil_masks[code] = Image.new("L", (w, h), 0)
             else:
-                masks[code] = torch.zeros((h, w), dtype=torch.float32)
+                pil_masks[code] = Image.new("L", (w, h), 0)
 
-        # Composite mask (Union of MA, HE, EX, SE)
+        # Composite mask (MA U HE U EX U SE) - OD strictly excluded
         comp_path_str = row.get("mask_composite")
         if pd.notna(comp_path_str) and comp_path_str:
             cp = Path(str(comp_path_str))
             full_comp_path = cp if cp.is_absolute() else (self.project_root / cp).resolve()
             if full_comp_path.exists():
-                with Image.open(full_comp_path) as c_img:
-                    c_arr = (np.array(c_img) > 0).astype(np.float32)
-                masks["composite"] = torch.tensor(c_arr, dtype=torch.float32)
+                pil_masks["composite"] = Image.open(full_comp_path).convert("L")
             else:
-                lesion_stack = torch.stack([masks["MA"], masks["HE"], masks["EX"], masks["SE"]], dim=0)
-                masks["composite"] = (torch.sum(lesion_stack, dim=0) > 0).float()
+                pil_masks["composite"] = Image.new("L", (w, h), 0)
         else:
-            lesion_stack = torch.stack([masks["MA"], masks["HE"], masks["EX"], masks["SE"]], dim=0)
-            masks["composite"] = (torch.sum(lesion_stack, dim=0) > 0).float()
+            pil_masks["composite"] = Image.new("L", (w, h), 0)
+
+        # Apply transformations
+        if self.joint_transform is not None:
+            tensor_img, masks = self.joint_transform(pil_rgb, pil_masks)
+        else:
+            if self.transform is not None:
+                tensor_img = self.transform(raw_rgb)
+            else:
+                tensor_img = transforms.functional.to_tensor(raw_rgb)
+            masks = {
+                k: (torch.from_numpy(np.array(m)) > 0).float()
+                for k, m in pil_masks.items()
+            }
+
+        cohort_origin = str(row.get("cohort_origin", "idrid_seg_unique"))
+        model_seen_status = str(row.get("model_seen_status", "unseen"))
+        grading_match_id = str(row.get("grading_match_id", ""))
 
         return {
             "image": tensor_img,
@@ -217,6 +315,10 @@ class SegmentationLesionDataset(Dataset):
             "image_id": str(row["image_id"]),
             "masks": masks,
             "annotation_status": annotation_status,
+            "pixel_counts": pixel_counts,
+            "cohort_origin": cohort_origin,
+            "model_seen_status": model_seen_status,
+            "grading_match_id": grading_match_id,
         }
 
 
@@ -229,20 +331,7 @@ def build_dataloaders(
     num_workers: int = 0,
     image_size: Tuple[int, int] = (512, 512),
 ) -> Tuple[DataLoader, DataLoader, Optional[DataLoader]]:
-    """Factory to construct train, val, and optional test DataLoaders.
-
-    Args:
-        train_manifest_path: CSV path for training split.
-        val_manifest_path: CSV path for validation split.
-        test_manifest_path: Optional CSV path for test split.
-        project_root: Root directory for relative path resolution.
-        batch_size: Mini-batch size.
-        num_workers: PyTorch DataLoader workers.
-        image_size: Target image dimensions.
-
-    Returns:
-        (train_loader, val_loader, test_loader)
-    """
+    """Factory to construct train, val, and optional test DataLoaders."""
     train_df = pd.read_csv(train_manifest_path)
     val_df = pd.read_csv(val_manifest_path)
 

@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
 """Preprocessing and dataset preparation pipeline for DR-GradCAM-Evaluation (Phase 2).
 
-Executes:
-1. APTOS 2019 Preprocessing (Primary Classification Backbone):
+Key Methodological Guarantees:
+1. Primary Classification Backbone: APTOS 2019 (3,662 images).
    - Stratified 80/20 train/validation split with fixed seed 42 (2,929 train / 733 val).
    - Retinal FOV border crop, aspect-ratio preserving isotropic resize, and centered zero-padding to 512x512.
    - Generates data/processed/aptos/train_split.csv and val_split.csv.
 
-2. IDRiD Preprocessing (External Classification & Localization Benchmark):
+2. IDRiD External Benchmarks:
    - IDRiD Grading Test Set (103 images): Processed as strictly held-out external classification benchmark.
-   - IDRiD Grading Train Set (413 images): Processed and kept separate (not used for primary training).
-   - IDRiD Segmentation Set (81 images): Preprocessed with identical spatial bounding box and padding
-     applied to all 5 lesion masks (MA, HE, EX, SE, OD) and composite mask (MA U HE U EX U SE).
-   - Unannotated lesion masks documented as annotated=False.
-   - Generates data/processed/idrid/ manifests.
+   - IDRiD Grading Train Set (413 images): Processed and kept separate (never used in primary model training).
+   - IDRiD Segmentation Set (81 images):
+     * Strictly UNSEEN by the primary model (model trained ONLY on APTOS).
+     * Cohort origin preserved: 57 from IDRiD grading train cohort, 3 from grading test cohort, 21 unique.
+     * Aligned with identical crop bounding box and padding offsets across all 5 lesion masks (MA, HE, EX, SE, OD).
+     * Masks resized via nearest-neighbor interpolation; optic disc strictly excluded from composite mask.
+     * Missing annotation files (e.g. 41 SE, 1 HE) explicitly differentiated from all-zero masks.
 
 3. Strict data leakage verification.
 
 Usage:
-    python scripts/preprocess_data.py [--config configs/config.yaml] [--size 512] [--dataset all|aptos|idrid] [--dry-run]
+    python scripts/preprocess_data.py [--config configs/config.yaml] [--size 512] [--workers 8] [--dry-run]
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -63,14 +67,52 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _process_single_grading_image(
+    item: Tuple[str, int, int, Path, Path, Tuple[int, int], bool, str, str]
+) -> dict:
+    """Helper to process a single grading image (FOV crop, isotropic pad, write)."""
+    dataset_name, grade, dme_risk, raw_path, out_path, target_size, dry_run, split_name, img_id = item
+    if not raw_path.exists():
+        raise FileNotFoundError(f"Missing image: {raw_path}")
+
+    if not dry_run:
+        if out_path.exists() and out_path.stat().st_size > 0:
+            bbox_str = "(0, 0, 0, 0)"
+            pad_str = "(0, 0, 0, 0)"
+        else:
+            processed_img, meta = preprocess_fundus_image(
+                str(raw_path), target_size=target_size, crop_fov=True
+            )
+            cv2.imwrite(str(out_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
+            bbox_str = str(meta["crop_bbox"])
+            pad_str = str(meta["pad_offsets"])
+    else:
+        bbox_str = "(0, 0, 0, 0)"
+        pad_str = "(0, 0, 0, 0)"
+
+    return {
+        "dataset": dataset_name,
+        "split": split_name,
+        "image_id": f"{dataset_name}/{split_name}/{img_id}",
+        "original_id": img_id,
+        "image_path": str(out_path.relative_to(PROJECT_ROOT)),
+        "raw_path": str(raw_path.relative_to(PROJECT_ROOT)),
+        "grade": grade,
+        "dme_risk": dme_risk,
+        "crop_bbox": bbox_str,
+        "pad_offsets": pad_str,
+    }
+
+
 def preprocess_aptos(
     config: dict,
     processed_dir: Path,
     target_size: Tuple[int, int] = (512, 512),
     seed: int = 42,
+    workers: int = 8,
     dry_run: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Stratified 80/20 train/val split and preprocessing for APTOS 2019."""
+    """Stratified 80/20 train/val split and multi-threaded preprocessing for APTOS 2019."""
     aptos_cfg = config.get("dataset", {}).get("aptos", config.get("aptos", {}))
     raw_dir = PROJECT_ROOT / aptos_cfg.get("raw_dir", "data/raw/APTOS")
     labels_file = PROJECT_ROOT / aptos_cfg.get("labels_file", "data/raw/APTOS/train.csv")
@@ -95,47 +137,28 @@ def preprocess_aptos(
         stratify=df[grade_col],
     )
 
-    def process_aptos_split(sub_df: pd.DataFrame, split_name: str) -> List[dict]:
-        records = []
-        desc = f"Preprocessing APTOS {split_name}"
-        for _, row in tqdm(sub_df.iterrows(), total=len(sub_df), desc=desc):
+    def process_split_concurrently(sub_df: pd.DataFrame, split_name: str) -> List[dict]:
+        tasks = []
+        for _, row in sub_df.iterrows():
             img_id = str(row[id_col]).strip()
             grade = int(row[grade_col])
             raw_path = images_dir / f"{img_id}.png"
-
-            if not raw_path.exists():
-                raise FileNotFoundError(f"Missing APTOS image: {raw_path}")
-
             out_filename = f"{split_name}_{img_id}.png"
             out_path = images_out_dir / out_filename
+            tasks.append((
+                "aptos", grade, -1, raw_path, out_path, target_size, dry_run, split_name, img_id
+            ))
 
-            if not dry_run:
-                processed_img, meta = preprocess_fundus_image(
-                    str(raw_path), target_size=target_size, crop_fov=True
-                )
-                cv2.imwrite(str(out_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
-                bbox_str = str(meta["crop_bbox"])
-                pad_str = str(meta["pad_offsets"])
-            else:
-                bbox_str = "(0, 0, 0, 0)"
-                pad_str = "(0, 0, 0, 0)"
-
-            records.append({
-                "dataset": "aptos",
-                "split": split_name,
-                "image_id": f"aptos/{split_name}/{img_id}",
-                "original_id": img_id,
-                "image_path": str(out_path.relative_to(PROJECT_ROOT)),
-                "raw_path": str(raw_path.relative_to(PROJECT_ROOT)),
-                "grade": grade,
-                "dme_risk": -1,
-                "crop_bbox": bbox_str,
-                "pad_offsets": pad_str,
-            })
+        desc = f"Preprocessing APTOS {split_name}"
+        if workers > 1 and not dry_run:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                records = list(tqdm(ex.map(_process_single_grading_image, tasks), total=len(tasks), desc=desc))
+        else:
+            records = [_process_single_grading_image(t) for t in tqdm(tasks, desc=desc)]
         return records
 
-    train_records = process_aptos_split(train_df, "train")
-    val_records = process_aptos_split(val_df, "val")
+    train_records = process_split_concurrently(train_df, "train")
+    val_records = process_split_concurrently(val_df, "val")
 
     train_manifest = pd.DataFrame(train_records)
     val_manifest = pd.DataFrame(val_records)
@@ -151,6 +174,7 @@ def preprocess_idrid(
     config: dict,
     processed_dir: Path,
     target_size: Tuple[int, int] = (512, 512),
+    workers: int = 8,
     dry_run: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Preprocess IDRiD External Grading sets and Segmentation sets."""
@@ -180,57 +204,49 @@ def preprocess_idrid(
     id_col = disease_cfg.get("image_id_col", "Image name")
     grade_col = disease_cfg.get("grade_col", "Retinopathy grade")
 
-    def process_grading_split(csv_path: Path, img_dir: Path, split_name: str) -> pd.DataFrame:
+    def process_grading_split_concurrently(csv_path: Path, img_dir: Path, split_name: str) -> pd.DataFrame:
         df = pd.read_csv(csv_path)
         dme_cols = [c for c in df.columns if "macular" in c.lower()]
         dme_col = dme_cols[0] if dme_cols else None
 
-        records = []
-        desc = f"Preprocessing IDRiD {split_name}"
-        for _, row in tqdm(df.iterrows(), total=len(df), desc=desc):
+        tasks = []
+        for _, row in df.iterrows():
             img_id = str(row[id_col]).strip()
             grade = int(row[grade_col])
             dme_risk = int(row[dme_col]) if dme_col else -1
-
             raw_path = img_dir / f"{img_id}.jpg"
-            if not raw_path.exists():
-                raise FileNotFoundError(f"Missing IDRiD image: {raw_path}")
-
             out_filename = f"{split_name}_{img_id}.jpg"
             out_path = images_out_dir / out_filename
+            tasks.append((
+                "idrid", grade, dme_risk, raw_path, out_path, target_size, dry_run, split_name, img_id
+            ))
 
-            if not dry_run:
-                processed_img, meta = preprocess_fundus_image(
-                    str(raw_path), target_size=target_size, crop_fov=True
-                )
-                cv2.imwrite(str(out_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
-                bbox_str = str(meta["crop_bbox"])
-                pad_str = str(meta["pad_offsets"])
-            else:
-                bbox_str = "(0, 0, 0, 0)"
-                pad_str = "(0, 0, 0, 0)"
-
-            records.append({
-                "dataset": "idrid",
-                "split": split_name,
-                "image_id": f"idrid/{split_name}/{img_id}",
-                "original_id": img_id,
-                "image_path": str(out_path.relative_to(PROJECT_ROOT)),
-                "raw_path": str(raw_path.relative_to(PROJECT_ROOT)),
-                "grade": grade,
-                "dme_risk": dme_risk,
-                "crop_bbox": bbox_str,
-                "pad_offsets": pad_str,
-            })
+        desc = f"Preprocessing IDRiD {split_name}"
+        if workers > 1 and not dry_run:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                records = list(tqdm(ex.map(_process_single_grading_image, tasks), total=len(tasks), desc=desc))
+        else:
+            records = [_process_single_grading_image(t) for t in tqdm(tasks, desc=desc)]
         return pd.DataFrame(records)
 
-    idrid_train_df = process_grading_split(train_labels_file, train_img_dir, "external_train")
-    idrid_test_df = process_grading_split(test_labels_file, test_img_dir, "external_test")
+    idrid_train_df = process_grading_split_concurrently(train_labels_file, train_img_dir, "external_train")
+    idrid_test_df = process_grading_split_concurrently(test_labels_file, test_img_dir, "external_test")
 
     idrid_train_df.to_csv(idrid_out_dir / "external_train.csv", index=False)
     idrid_test_df.to_csv(idrid_out_dir / "external_test.csv", index=False)
 
     # 2. IDRiD Segmentation Set (81 images)
+    # Load exact match mapping to record cohort origin
+    matches_json_path = PROJECT_ROOT / "reports" / "idrid_seg_grading_matches.json"
+    matches_info: Dict[str, Any] = {}
+    if matches_json_path.exists():
+        with open(matches_json_path, "r", encoding="utf-8") as f:
+            matches_info = json.load(f)
+
+    all_match_details = matches_info.get("all_details", {})
+    matched_train_ids = set(matches_info.get("matched_train_ids", []))
+    matched_test_ids = set(matches_info.get("matched_test_ids", []))
+
     seg_train_dir = PROJECT_ROOT / seg_cfg["train_images_dir"]
     seg_test_dir = PROJECT_ROOT / seg_cfg["test_images_dir"]
     masks_root_dir = PROJECT_ROOT / seg_cfg["masks_root_dir"]
@@ -243,13 +259,26 @@ def preprocess_idrid(
 
     for raw_img_path in tqdm(seg_images, desc="Preprocessing IDRiD segmentation & masks"):
         img_id = raw_img_path.stem
+        filename_with_ext = raw_img_path.name
         out_img_path = seg_img_out / f"{img_id}.jpg"
+
+        # Determine cohort origin and match info
+        match_entry = all_match_details.get(filename_with_ext, {})
+        target_img = match_entry.get("target_image") or ""
+
+        if filename_with_ext in matched_train_ids:
+            cohort_origin = "idrid_grading_train_cohort"
+        elif filename_with_ext in matched_test_ids:
+            cohort_origin = "idrid_grading_test_cohort"
+        else:
+            cohort_origin = "idrid_seg_unique"
 
         if not dry_run:
             processed_img, meta = preprocess_fundus_image(
                 str(raw_img_path), target_size=target_size, crop_fov=True
             )
-            cv2.imwrite(str(out_img_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
+            if not (out_img_path.exists() and out_img_path.stat().st_size > 0):
+                cv2.imwrite(str(out_img_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
         else:
             meta = {
                 "crop_bbox": (0, 0, 0, 0),
@@ -265,6 +294,9 @@ def preprocess_idrid(
             "raw_path": str(raw_img_path.relative_to(PROJECT_ROOT)),
             "crop_bbox": str(meta["crop_bbox"]),
             "pad_offsets": str(meta["pad_offsets"]),
+            "cohort_origin": cohort_origin,
+            "model_seen_status": "unseen",  # Strictly unseen; model trains ONLY on APTOS
+            "grading_match_id": target_img,
         }
 
         processed_masks: Dict[str, np.ndarray] = {}
@@ -282,25 +314,35 @@ def preprocess_idrid(
                     with Image.open(matching_masks[0]) as m_pil:
                         m_arr = np.array(m_pil)
                     binary_mask = preprocess_mask_with_transform(m_arr, meta)
-                    cv2.imwrite(str(mask_out_path), binary_mask * 255)
+                    if not (mask_out_path.exists() and mask_out_path.stat().st_size > 0):
+                        cv2.imwrite(str(mask_out_path), binary_mask * 255)
                     processed_masks[code] = binary_mask
+                    pos_pixels = int(np.sum(binary_mask))
+                    rec[f"pixel_count_{code}"] = pos_pixels
+                    rec[f"lesion_present_{code}"] = bool(pos_pixels > 0)
                 else:
                     processed_masks[code] = np.zeros(target_size, dtype=np.uint8)
+                    rec[f"pixel_count_{code}"] = 0
+                    rec[f"lesion_present_{code}"] = False
             else:
-                # Document clearly: unannotated lesion channel
+                # Explicitly document: missing annotation file
                 rec[f"annotated_{code}"] = False
+                rec[f"pixel_count_{code}"] = -1
+                rec[f"lesion_present_{code}"] = None
                 zero_mask = np.zeros(target_size, dtype=np.uint8)
                 if not dry_run:
-                    cv2.imwrite(str(mask_out_path), zero_mask)
+                    if not (mask_out_path.exists() and mask_out_path.stat().st_size > 0):
+                        cv2.imwrite(str(mask_out_path), zero_mask)
                 processed_masks[code] = zero_mask
 
-        # Composite mask (MA U HE U EX U SE)
+        # Composite mask (MA U HE U EX U SE) - OD strictly excluded
         comp_out_path = seg_masks_out / "composite" / f"{img_id}_composite.png"
         rec["mask_composite"] = str(comp_out_path.relative_to(PROJECT_ROOT))
 
         if not dry_run:
             composite = build_composite_lesion_mask(processed_masks)
-            cv2.imwrite(str(comp_out_path), composite * 255)
+            if not (comp_out_path.exists() and comp_out_path.stat().st_size > 0):
+                cv2.imwrite(str(comp_out_path), composite * 255)
             rec["composite_pixels"] = int(np.sum(composite))
         else:
             rec["composite_pixels"] = 0
@@ -362,6 +404,10 @@ def generate_report(
     output_path: Path,
 ) -> None:
     """Generate Markdown report summarizing Phase 2 preprocessing and splits."""
+    cohort_train_c = int((idrid_seg["cohort_origin"] == "idrid_grading_train_cohort").sum())
+    cohort_test_c = int((idrid_seg["cohort_origin"] == "idrid_grading_test_cohort").sum())
+    cohort_unique_c = int((idrid_seg["cohort_origin"] == "idrid_seg_unique").sum())
+
     lines = [
         "# Data Preparation & Preprocessing Report — Phase 2",
         "",
@@ -378,8 +424,8 @@ def generate_report(
         f"- **Primary Training Set (APTOS 80%):** {len(aptos_train)} images",
         f"- **Primary Validation Set (APTOS 20%):** {len(aptos_val)} images",
         f"- **External Test Benchmark (IDRiD):** {len(idrid_test)} images",
-        f"- **External Training Cohort (IDRiD):** {len(idrid_train)} images (Kept separate from primary training)",
-        f"- **Localization Benchmark (IDRiD):** {len(idrid_seg)} images (with aligned expert lesion masks)",
+        f"- **External Training Cohort (IDRiD):** {len(idrid_train)} images (Kept separate; not used for primary training)",
+        f"- **Localization Benchmark (IDRiD):** {len(idrid_seg)} images (100% UNSEEN by primary model)",
         "",
         "## 2. Primary Classification Backbone: APTOS 2019 Split Balance",
         "",
@@ -406,17 +452,46 @@ def generate_report(
     lines.extend([
         f"| **Total** | — | **{len(aptos_train)}** | **{len(aptos_val)}** | **{len(aptos_train) + len(aptos_val)}** | **100.0%** | **100.0%** |",
         "",
-        "## 3. IDRiD External Benchmarks Structure",
+        "## 3. IDRiD Segmentation Cohort & Lesion Masks",
         "",
-        f"- **IDRiD Grading External Test Set:** {len(idrid_test)} images (Official challenge test set).",
-        f"- **IDRiD Grading External Train Set:** {len(idrid_train)} images (Preserved intact for secondary/fine-tuning experiments).",
-        f"- **IDRiD Segmentation Set:** {len(idrid_seg)} images with aligned binary masks:",
-        "  - Microaneurysms (`MA`): 81 annotated",
-        "  - Haemorrhages (`HE`): 80 annotated (1 unannotated: `IDRiD_43`)",
-        "  - Hard Exudates (`EX`): 81 annotated",
-        "  - Soft Exudates (`SE`): 40 annotated (41 unannotated)",
-        "  - Optic Disc (`OD`): 81 annotated (landmark control)",
-        "  - Composite Lesion Mask: `Composite = MA ∪ HE ∪ EX ∪ SE`",
+        "> [!IMPORTANT]",
+        "> **Model Independence Guarantee:** Our primary CNN is trained SOLELY on APTOS 2019.",
+        "> Therefore, **ALL 81 IDRiD segmentation images are 100% unseen by the model**.",
+        "> The 57 images originating from IDRiD's grading training set must NOT be described as",
+        "> 'model training-distribution images'. They are documented as `idrid_grading_train_cohort`.",
+        "",
+        "### Cohort Origin Breakdown",
+        f"- `idrid_grading_train_cohort`: **{cohort_train_c}** images (Overlap with IDRiD's own grading train set)",
+        f"- `idrid_grading_test_cohort`: **{cohort_test_c}** images (Overlap with IDRiD's own grading test set)",
+        f"- `idrid_seg_unique`: **{cohort_unique_c}** images (Unique to IDRiD segmentation)",
+        f"- **Model Seen Status:** 100% marked as `unseen`.",
+        "",
+        "### Lesion Mask Annotation Availability vs. Absence",
+        "",
+        "| Lesion Type | Annotated Files Present | Missing Annotation Files | All-Zero Annotated Masks | Non-Zero Lesion Masks |",
+        "| :--- | :---: | :---: | :---: | :---: |",
+    ])
+
+    for code, full_name in [
+        ("MA", "Microaneurysms"),
+        ("HE", "Haemorrhages"),
+        ("EX", "Hard Exudates"),
+        ("SE", "Soft Exudates"),
+        ("OD", "Optic Disc (landmark control)"),
+    ]:
+        ann_cnt = int(idrid_seg[f"annotated_{code}"].sum())
+        miss_cnt = len(idrid_seg) - ann_cnt
+        if "pixel_count_" + code in idrid_seg.columns:
+            zero_cnt = int(((idrid_seg[f"annotated_{code}"] == True) & (idrid_seg[f"pixel_count_{code}"] == 0)).sum())
+            pos_cnt = int(((idrid_seg[f"annotated_{code}"] == True) & (idrid_seg[f"pixel_count_{code}"] > 0)).sum())
+        else:
+            zero_cnt = 0
+            pos_cnt = ann_cnt
+        lines.append(f"| **{code}** ({full_name}) | {ann_cnt} | {miss_cnt} | {zero_cnt} | {pos_cnt} |")
+
+    lines.extend([
+        "",
+        "- **Composite Lesion Mask:** Union of `MA ∪ HE ∪ EX ∪ SE` (Optic Disc strictly excluded).",
         "",
         "## 4. Zero-Leakage & Integrity Verification",
         "",
@@ -427,7 +502,7 @@ def generate_report(
 
     lines.extend([
         "",
-        "## 5. Processed Artifact Manifests",
+        "## 5. Processed Manifests",
         "",
         "- `data/processed/aptos/train_split.csv` ($N=2,929$)",
         "- `data/processed/aptos/val_split.csv` ($N=733$)",
@@ -459,10 +534,10 @@ def main() -> int:
         help="Target square image dimension (default: 512).",
     )
     parser.add_argument(
-        "--dataset",
-        choices=["all", "aptos", "idrid"],
-        default="all",
-        help="Which dataset to preprocess (default: all).",
+        "--workers",
+        type=int,
+        default=8,
+        help="Number of multi-threaded workers for fast disk I/O.",
     )
     parser.add_argument(
         "--dry-run",
@@ -478,7 +553,7 @@ def main() -> int:
     args = parser.parse_args()
     setup_logging(args.verbose)
 
-    logging.info(f"Starting Phase 2 preprocessing (dataset={args.dataset}, size={args.size}, dry_run={args.dry_run})...")
+    logging.info(f"Starting Phase 2 preprocessing (size={args.size}, workers={args.workers}, dry_run={args.dry_run})...")
     config = load_config(args.config)
     processed_dir = PROJECT_ROOT / config.get("dataset", {}).get("processed_dir", "data/processed")
     target_size = (args.size, args.size)
@@ -490,6 +565,7 @@ def main() -> int:
         processed_dir=processed_dir,
         target_size=target_size,
         seed=seed,
+        workers=args.workers,
         dry_run=args.dry_run,
     )
 
@@ -498,6 +574,7 @@ def main() -> int:
         config=config,
         processed_dir=processed_dir,
         target_size=target_size,
+        workers=args.workers,
         dry_run=args.dry_run,
     )
 
@@ -524,7 +601,7 @@ def main() -> int:
     print(f"APTOS Val Split (20%):      {len(aptos_val)} images (seed={seed})")
     print(f"IDRiD External Test Set:    {len(idrid_test)} images")
     print(f"IDRiD External Train Cohort:{len(idrid_train)} images (Kept separate)")
-    print(f"IDRiD Segmentation Set:     {len(idrid_seg)} images (with aligned masks)")
+    print(f"IDRiD Segmentation Set:     {len(idrid_seg)} images (ALL UNSEEN by model)")
     print(f"Data Leakage Check:         {'PASSED (Zero Leakage) ✅' if leakage_passed else 'FAILED ⚠️'}")
     print(f"Report:                     {report_path}")
     print("=" * 70 + "\n")

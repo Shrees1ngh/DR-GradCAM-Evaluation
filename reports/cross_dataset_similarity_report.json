@@ -1,0 +1,331 @@
+{
+  "aptos_count": 3662,
+  "idrid_count": 597,
+  "total_pairwise_comparisons": 2186214,
+  "phash_stats": {
+    "min_distance": 6,
+    "mean_distance": 27.41444295938092,
+    "std_distance": 4.813537728643412,
+    "p1": 15.0,
+    "p5": 19.0,
+    "p25": 24.0,
+    "p50": 28.0
+  },
+  "dhash_stats": {
+    "min_distance": 0,
+    "mean_distance": 15.713910440606455,
+    "std_distance": 5.877156673667782,
+    "p1": 4.0,
+    "p5": 6.0,
+    "p25": 12.0,
+    "p50": 16.0
+  },
+  "exact_duplicates_count": 0,
+  "joint_near_duplicates_count": 0,
+  "phash_near_candidates_count": 0,
+  "phash_candidates": [],
+  "dhash_low_candidates_count": 1625,
+  "dhash_low_candidates": [
+    {
+      "aptos_image": "002c21358ce6.png",
+      "idrid_image": "IDRiD_225.jpg",
+      "phash_distance": 18,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "002c21358ce6.png",
+      "idrid_image": "IDRiD_251.jpg",
+      "phash_distance": 17,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "002c21358ce6.png",
+      "idrid_image": "IDRiD_396.jpg",
+      "phash_distance": 13,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_28.jpg",
+      "phash_distance": 20,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_204.jpg",
+      "phash_distance": 17,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_225.jpg",
+      "phash_distance": 20,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_228.jpg",
+      "phash_distance": 17,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_229.jpg",
+      "phash_distance": 15,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_243.jpg",
+      "phash_distance": 16,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_244.jpg",
+      "phash_distance": 22,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_261.jpg",
+      "phash_distance": 20,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_080.jpg",
+      "phash_distance": 21,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0125fbd2e791.png",
+      "idrid_image": "IDRiD_084.jpg",
+      "phash_distance": 15,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_28.jpg",
+      "phash_distance": 20,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_204.jpg",
+      "phash_distance": 19,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_225.jpg",
+      "phash_distance": 28,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_228.jpg",
+      "phash_distance": 25,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_229.jpg",
+      "phash_distance": 21,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_243.jpg",
+      "phash_distance": 20,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_244.jpg",
+      "phash_distance": 24,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_261.jpg",
+      "phash_distance": 20,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_080.jpg",
+      "phash_distance": 23,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0232dfea7547.png",
+      "idrid_image": "IDRiD_084.jpg",
+      "phash_distance": 25,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "02da652c74b8.png",
+      "idrid_image": "IDRiD_141.jpg",
+      "phash_distance": 17,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "02da652c74b8.png",
+      "idrid_image": "IDRiD_166.jpg",
+      "phash_distance": 9,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "02da652c74b8.png",
+      "idrid_image": "IDRiD_386.jpg",
+      "phash_distance": 13,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "0304bedad8fe.png",
+      "idrid_image": "IDRiD_396.jpg",
+      "phash_distance": 17,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "03a7f4a5786f.png",
+      "idrid_image": "IDRiD_77.jpg",
+      "phash_distance": 19,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "03a7f4a5786f.png",
+      "idrid_image": "IDRiD_057.jpg",
+      "phash_distance": 19,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "03a7f4a5786f.png",
+      "idrid_image": "IDRiD_319.jpg",
+      "phash_distance": 21,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "03a7f4a5786f.png",
+      "idrid_image": "IDRiD_410.jpg",
+      "phash_distance": 30,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_28.jpg",
+      "phash_distance": 16,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_204.jpg",
+      "phash_distance": 15,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_225.jpg",
+      "phash_distance": 20,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_228.jpg",
+      "phash_distance": 17,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_229.jpg",
+      "phash_distance": 13,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_243.jpg",
+      "phash_distance": 14,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_244.jpg",
+      "phash_distance": 22,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_261.jpg",
+      "phash_distance": 16,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_080.jpg",
+      "phash_distance": 15,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05339950962e.png",
+      "idrid_image": "IDRiD_084.jpg",
+      "phash_distance": 13,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05e9126dfa5c.png",
+      "idrid_image": "IDRiD_225.jpg",
+      "phash_distance": 27,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05e9126dfa5c.png",
+      "idrid_image": "IDRiD_251.jpg",
+      "phash_distance": 22,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "05e9126dfa5c.png",
+      "idrid_image": "IDRiD_396.jpg",
+      "phash_distance": 20,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "07751b94a88a.png",
+      "idrid_image": "IDRiD_14.jpg",
+      "phash_distance": 22,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "07751b94a88a.png",
+      "idrid_image": "IDRiD_225.jpg",
+      "phash_distance": 25,
+      "dhash_distance": 0
+    },
+    {
+      "aptos_image": "07751b94a88a.png",
+      "idrid_image": "IDRiD_232.jpg",
+      "phash_distance": 22,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "07751b94a88a.png",
+      "idrid_image": "IDRiD_268.jpg",
+      "phash_distance": 22,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "07751b94a88a.png",
+      "idrid_image": "IDRiD_302.jpg",
+      "phash_distance": 22,
+      "dhash_distance": 1
+    },
+    {
+      "aptos_image": "07a3be30563b.png",
+      "idrid_image": "IDRiD_060.jpg",
+      "phash_distance": 28,
+      "dhash_distance": 1
+    }
+  ],
+  "is_visually_independent": true
+}
