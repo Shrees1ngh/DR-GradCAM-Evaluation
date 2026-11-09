@@ -199,8 +199,8 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        if scaler is not None:
-            with torch.cuda.amp.autocast():
+        if scaler is not None and device.type == "cuda":
+            with torch.amp.autocast(device_type="cuda"):
                 logits = model(images)
                 loss = criterion(logits, targets)
             scaler.scale(loss).backward()
@@ -287,11 +287,13 @@ def main() -> int:
     parser.add_argument("--weight-decay", type=float, default=None, help="Weight decay (overrides config)")
     parser.add_argument("--dropout", type=float, default=None, help="Dropout probability (overrides config)")
     parser.add_argument("--patience", type=int, default=None, help="Early stopping patience epochs")
+    parser.add_argument("--min-delta", type=float, default=None, help="Minimum validation QWK improvement required (overrides config)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Compute device")
     parser.add_argument("--num-workers", type=int, default=None, help="DataLoader workers")
     parser.add_argument("--dry-run", action="store_true", help="Run 1 quick epoch on small subset for verification")
     parser.add_argument("--eval-only", action="store_true", help="Skip training; evaluate existing checkpoint")
+    parser.add_argument("--eval-external", action="store_true", help="Explicitly evaluate strictly held-out IDRiD external test set")
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Custom checkpoint path to load or save")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
 
@@ -318,23 +320,24 @@ def main() -> int:
     weight_decay = args.weight_decay if args.weight_decay is not None else train_cfg.get("weight_decay", 1e-4)
     dropout_rate = args.dropout if args.dropout is not None else model_cfg.get("dropout_rate", 0.3)
     patience = args.patience if args.patience is not None else train_cfg.get("patience", 5)
+    min_delta = args.min_delta if args.min_delta is not None else float(train_cfg.get("min_delta", 0.001))
     num_classes = model_cfg.get("num_classes", 5)
     pretrained = model_cfg.get("pretrained", True)
     num_workers = args.num_workers if args.num_workers is not None else train_cfg.get("num_workers", 0)
 
-    # 2. Select Device & Mixed Precision
+    # 2. Select Device & Mixed Precision (Modern PyTorch AMP API)
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         device = torch.device(args.device)
 
-    use_amp = bool(train_cfg.get("mixed_precision", True) and device.type == "cuda")
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    use_amp = bool(train_cfg.get("mixed_precision", True) and device.type == "cuda" and torch.cuda.is_available())
+    scaler = torch.amp.GradScaler("cuda") if use_amp else None
 
     logging.info(
         f"Training configuration: device={device.type.upper()}, batch_size={batch_size}, "
         f"lr={lr}, weight_decay={weight_decay}, dropout={dropout_rate}, epochs={epochs}, "
-        f"patience={patience}, amp={use_amp}, seed={seed}"
+        f"patience={patience}, min_delta={min_delta}, amp={use_amp}, seed={seed}"
     )
 
     # 3. Resolve Dataset Manifest Paths
@@ -343,37 +346,47 @@ def main() -> int:
     val_csv = processed_dir / "aptos" / "val_split.csv"
     idrid_test_csv = processed_dir / "idrid" / "external_test.csv"
 
-    for path in [train_csv, val_csv, idrid_test_csv]:
+    required_manifests = [train_csv, val_csv]
+    if args.eval_external:
+        required_manifests.append(idrid_test_csv)
+
+    for path in required_manifests:
         if not path.exists():
             logging.error(f"Required manifest not found at: {path}. Run scripts/preprocess_data.py first.")
             return 1
 
     train_df = pd.read_csv(train_csv)
     val_df = pd.read_csv(val_csv)
-    idrid_test_df = pd.read_csv(idrid_test_csv)
+    idrid_test_df = pd.read_csv(idrid_test_csv) if args.eval_external else None
 
     if args.dry_run:
         logging.info("DRY-RUN mode active: truncating datasets to 16 samples for smoke testing.")
         train_df = train_df.head(16)
         val_df = val_df.head(16)
-        idrid_test_df = idrid_test_df.head(16)
+        if idrid_test_df is not None:
+            idrid_test_df = idrid_test_df.head(16)
         epochs = 1
 
     # 4. Build Datasets and DataLoaders
+    aug_cfg = config.get("preprocessing", {}).get("augmentation", {})
     train_dataset = DRGradingDataset(
         manifest_df=train_df,
         project_root=PROJECT_ROOT,
-        transform=get_default_transforms(split="train"),
+        transform=get_default_transforms(split="train", augmentation_config=aug_cfg),
     )
     val_dataset = DRGradingDataset(
         manifest_df=val_df,
         project_root=PROJECT_ROOT,
         transform=get_default_transforms(split="val"),
     )
-    idrid_test_dataset = DRGradingDataset(
-        manifest_df=idrid_test_df,
-        project_root=PROJECT_ROOT,
-        transform=get_default_transforms(split="test"),
+    idrid_test_dataset = (
+        DRGradingDataset(
+            manifest_df=idrid_test_df,
+            project_root=PROJECT_ROOT,
+            transform=get_default_transforms(split="test"),
+        )
+        if idrid_test_df is not None
+        else None
     )
 
     train_loader = DataLoader(
@@ -390,17 +403,21 @@ def main() -> int:
         num_workers=num_workers,
         pin_memory=(device.type == "cuda"),
     )
-    idrid_test_loader = DataLoader(
-        idrid_test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=(device.type == "cuda"),
+    idrid_test_loader = (
+        DataLoader(
+            idrid_test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=(device.type == "cuda"),
+        )
+        if idrid_test_dataset is not None
+        else None
     )
 
+    ext_status = f", IDRiD External Test={len(idrid_test_dataset)}" if idrid_test_dataset is not None else " (IDRiD External Test: Skipped; opt-in with --eval-external)"
     logging.info(
-        f"DataLoaders initialized: Train={len(train_dataset)}, Val={len(val_dataset)}, "
-        f"IDRiD External Test={len(idrid_test_dataset)}"
+        f"DataLoaders initialized: Train={len(train_dataset)}, Val={len(val_dataset)}{ext_status}"
     )
 
     # 5. Build Model
@@ -440,18 +457,22 @@ def main() -> int:
         model.load_state_dict(ckpt["model_state_dict"])
 
         val_loss, val_metrics, _, _ = evaluate(model, val_loader, criterion, device, "Validation")
-        test_loss, test_metrics, _, _ = evaluate(model, idrid_test_loader, criterion, device, "IDRiD External Test")
-
         logging.info(f"Validation QWK: {val_metrics['qwk']:.4f}, Accuracy: {val_metrics['accuracy']:.4f}")
-        logging.info(f"IDRiD Test QWK: {test_metrics['qwk']:.4f}, Accuracy: {test_metrics['accuracy']:.4f}")
+
+        if args.eval_external and idrid_test_loader is not None:
+            test_loss, test_metrics, _, _ = evaluate(model, idrid_test_loader, criterion, device, "IDRiD External Test")
+            logging.info(f"IDRiD Test QWK: {test_metrics['qwk']:.4f}, Accuracy: {test_metrics['accuracy']:.4f}")
+        else:
+            logging.info("External test evaluation not requested. Pass --eval-external to evaluate on IDRiD.")
         return 0
 
     # 8. Training Loop with Early Stopping on Validation QWK
-    logging.info(f"Starting model training for up to {epochs} epochs...")
-    best_val_qwk = -1.0
-    best_val_metrics: Dict[str, Any] = {}
-    best_epoch = 0
-    patience_counter = 0
+    logging.info(f"Starting model training for up to {epochs} epochs (min_delta={min_delta}, patience={patience})...")
+    best_val_qwk = -float("inf")           # Highest actual validation QWK observed across all epochs
+    best_val_metrics: Dict[str, Any] = {}  # Metrics corresponding to highest validation QWK
+    best_epoch = 0                         # Epoch that produced the highest validation QWK
+    patience_benchmark_qwk = -float("inf") # Benchmark QWK for early-stopping patience evaluation
+    patience_counter = 0                   # Consecutive epochs without >= min_delta improvement over benchmark
     history: List[Dict[str, Any]] = []
 
     start_time = time.time()
@@ -505,17 +526,17 @@ def main() -> int:
             f"lr: {current_lr:.2e}"
         )
 
-        # Monitor validation QWK for early stopping and best checkpoint
+        # 1. Checkpoint Selection: Always preserve the checkpoint with the highest actual validation QWK
         if val_qwk > best_val_qwk:
-            delta = val_qwk - best_val_qwk
+            actual_gain = val_qwk - best_val_qwk if best_val_qwk != -float("inf") else val_qwk
             best_val_qwk = val_qwk
             best_val_metrics = val_metrics
             best_epoch = epoch
-            patience_counter = 0
 
             checkpoint_state = {
                 "epoch": epoch,
                 "best_val_qwk": best_val_qwk,
+                "min_delta": min_delta,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "model_config": {
@@ -530,12 +551,33 @@ def main() -> int:
                 "timestamp": datetime.now().isoformat(),
             }
             save_checkpoint(checkpoint_state, best_checkpoint_path)
-            logging.info(f"--> Best model updated at epoch {epoch:02d} (QWK: {best_val_qwk:.4f}, +{delta:.4f})")
+            logging.info(
+                f"--> Saved best model checkpoint at epoch {epoch:02d} "
+                f"(Highest observed QWK: {best_val_qwk:.4f}, gain: {actual_gain:+.4f})"
+            )
+
+        # 2. Early-Stopping Patience: Reset patience only when QWK improves by at least min_delta over benchmark
+        if patience_benchmark_qwk == -float("inf") or (val_qwk >= patience_benchmark_qwk + min_delta):
+            benchmark_gain = val_qwk - patience_benchmark_qwk if patience_benchmark_qwk != -float("inf") else val_qwk
+            patience_benchmark_qwk = val_qwk
+            patience_counter = 0
+            logging.info(
+                f"Patience reset to 0 at epoch {epoch:02d} "
+                f"(QWK: {val_qwk:.4f}, benchmark gain: {benchmark_gain:+.4f} >= min_delta {min_delta:.4f})"
+            )
         else:
             patience_counter += 1
-            logging.info(f"Patience: {patience_counter}/{patience} (Best QWK: {best_val_qwk:.4f} at epoch {best_epoch})")
+            logging.info(
+                f"Patience: {patience_counter}/{patience} "
+                f"(Current QWK: {val_qwk:.4f}, Benchmark: {patience_benchmark_qwk:.4f}, "
+                f"Target for reset: >={patience_benchmark_qwk + min_delta:.4f}, "
+                f"Best saved QWK: {best_val_qwk:.4f} at epoch {best_epoch:02d})"
+            )
             if patience_counter >= patience:
-                logging.info(f"Early stopping triggered after {patience} epochs without QWK improvement.")
+                logging.info(
+                    f"Early stopping triggered after {patience} epochs without QWK improvement >= {min_delta} "
+                    f"(Preserving best checkpoint from epoch {best_epoch:02d} with QWK {best_val_qwk:.4f})."
+                )
                 break
 
     total_training_time = time.time() - start_time
@@ -547,24 +589,27 @@ def main() -> int:
     history_df.to_csv(history_csv, index=False)
     logging.info(f"Training history saved: {history_csv}")
 
-    # 10. Final Evaluation on Held-Out IDRiD External Test Set
-    logging.info("=" * 70)
-    logging.info("FINAL EVALUATION: Loading best checkpoint for external test assessment...")
-    logging.info("=" * 70)
-
+    # 10. Final Evaluation using Selected Best Checkpoint
     best_ckpt = torch.load(best_checkpoint_path, map_location=device)
     model.load_state_dict(best_ckpt["model_state_dict"])
 
     # Re-evaluate validation with best model to confirm exact reproduction
     _, final_val_metrics, _, _ = evaluate(model, val_loader, criterion, device, "Validation [Best Checkpoint]")
 
-    # Strictly evaluate IDRiD External Test (103 images)
-    idrid_loss, idrid_metrics, _, _ = evaluate(
-        model, idrid_test_loader, criterion, device, "IDRiD External Test"
-    )
-
-    logging.info(f"Best Validation QWK: {final_val_metrics['qwk']:.4f}, Acc: {final_val_metrics['accuracy']:.4f}")
-    logging.info(f"IDRiD External Test QWK: {idrid_metrics['qwk']:.4f}, Acc: {idrid_metrics['accuracy']:.4f}")
+    idrid_metrics = None
+    if args.eval_external:
+        if idrid_test_loader is not None:
+            logging.info("=" * 70)
+            logging.info("EXTERNAL EVALUATION: Evaluating best checkpoint on IDRiD External Test...")
+            logging.info("=" * 70)
+            idrid_loss, idrid_metrics, _, _ = evaluate(
+                model, idrid_test_loader, criterion, device, "IDRiD External Test"
+            )
+            logging.info(f"IDRiD External Test QWK: {idrid_metrics['qwk']:.4f}, Acc: {idrid_metrics['accuracy']:.4f}")
+        else:
+            logging.warning("--eval-external was requested, but external test loader was not initialized.")
+    else:
+        logging.info("IDRiD External Test evaluation skipped (opt-in via --eval-external).")
 
     # 11. Save Full Metrics Summary JSON
     summary_data = {
@@ -573,6 +618,13 @@ def main() -> int:
         "best_epoch": best_epoch,
         "total_epochs_trained": len(history),
         "total_training_time_sec": round(total_training_time, 2),
+        "is_dry_run": bool(args.dry_run),
+        "evaluated_external_test": bool(args.eval_external and idrid_metrics is not None),
+        "sample_counts": {
+            "train": len(train_dataset),
+            "val": len(val_dataset),
+            "external_test": len(idrid_test_dataset) if (args.eval_external and idrid_test_dataset is not None) else 0,
+        },
         "hyperparameters": {
             "model": "resnet50",
             "pretrained": pretrained,
@@ -582,7 +634,9 @@ def main() -> int:
             "initial_lr": lr,
             "weight_decay": weight_decay,
             "patience": patience,
+            "min_delta": min_delta,
             "device": device.type,
+            "mixed_precision": use_amp,
         },
         "best_validation_metrics": final_val_metrics,
         "idrid_external_test_metrics": idrid_metrics,
@@ -598,16 +652,25 @@ def main() -> int:
     generate_training_report(summary_data, history_df, report_md_path)
     logging.info(f"Phase 3 training report written to: {report_md_path}")
 
+    banner_title = "PHASE 3: CNN MODEL DEVELOPMENT & TRAINING SUMMARY"
+    if args.dry_run:
+        banner_title += " [DRY-RUN / SMOKE TEST]"
+
     print("\n" + "=" * 70)
-    print("PHASE 3: CNN MODEL DEVELOPMENT & TRAINING SUMMARY")
+    print(banner_title)
     print("=" * 70)
     print(f"Architecture:            ResNet-50 (Pretrained={pretrained}, Dropout={dropout_rate})")
     print(f"Best Epoch:              {best_epoch} / {len(history)}")
-    print(f"Validation QWK:          {final_val_metrics['qwk']:.4f} (Accuracy: {final_val_metrics['accuracy']*100:.2f}%)")
-    print(f"IDRiD External Test QWK: {idrid_metrics['qwk']:.4f} (Accuracy: {idrid_metrics['accuracy']*100:.2f}%)")
+    print(f"Validation QWK:          {final_val_metrics['qwk']:.4f} (Accuracy: {final_val_metrics['accuracy']*100:.2f}%) [N={len(val_dataset)}]")
+    if idrid_metrics is not None:
+        print(f"IDRiD External Test QWK: {idrid_metrics['qwk']:.4f} (Accuracy: {idrid_metrics['accuracy']*100:.2f}%) [N={len(idrid_test_dataset)}]")
+    else:
+        print("IDRiD External Test:     Skipped (opt-in with --eval-external)")
     print(f"Best Checkpoint:         {best_checkpoint_path}")
     print(f"Metrics JSON:            {metrics_json}")
     print(f"Report:                  {report_md_path}")
+    if args.dry_run:
+        print("NOTE: Dry-run mode was used. Results are for pipeline verification only.")
     print("=" * 70 + "\n")
 
     return 0
@@ -618,34 +681,65 @@ def generate_training_report(
 ) -> None:
     """Generate comprehensive Markdown report for Phase 3 CNN model development."""
     val_m = summary["best_validation_metrics"]
-    test_m = summary["idrid_external_test_metrics"]
+    test_m = summary.get("idrid_external_test_metrics")
     hp = summary["hyperparameters"]
+    counts = summary.get("sample_counts", {})
+    train_n = counts.get("train", "N/A")
+    val_n = counts.get("val", "N/A")
+    test_n = counts.get("external_test", 0)
+    is_dry_run = summary.get("is_dry_run", False)
 
-    md = f"""# Phase 3 Training & Evaluation Report: CNN Classification Model
+    status_badge = "SMOKE TEST / PIPELINE VERIFICATION ONLY ⚠️" if is_dry_run else "COMPLETE & VERIFIED ✅"
+    title_suffix = " [SMOKE TEST / DRY RUN]" if is_dry_run else ""
+
+    dry_run_notice = ""
+    if is_dry_run:
+        dry_run_notice = f"""
+> [!WARNING]
+> **SMOKE TEST EXECUTION ONLY**
+> This report was generated from a dry-run execution on a truncated sample subset
+> (Train: {train_n}, Val: {val_n}).
+> These metrics verify pipeline execution only and **DO NOT** represent full model convergence or valid research results.
+> Full model training must be executed on GPU to obtain research-grade results.
+"""
+
+    ext_col_header = "External Benchmark (IDRiD Test)"
+    if test_m is not None:
+        ext_count_str = f"{test_n} images"
+        ext_qwk_str = f"**{test_m['qwk']:.4f}**"
+        ext_acc_str = f"**{test_m['accuracy']*100:.2f}%**"
+        ext_f1_str = f"**{test_m['macro_f1']:.4f}**"
+    else:
+        ext_count_str = "Not Evaluated (Opt-in via `--eval-external`)"
+        ext_qwk_str = "N/A"
+        ext_acc_str = "N/A"
+        ext_f1_str = "N/A"
+
+    md = f"""# Phase 3 Training & Evaluation Report: CNN Classification Model{title_suffix}
 
 **Project:** DR-GradCAM-Evaluation  
 **Phase:** Phase 3 — CNN Model Development (ResNet-50)  
 **Generated:** {summary['timestamp']}  
-**Status:** COMPLETE & VERIFIED ✅  
-
+**Status:** {status_badge}  
+{dry_run_notice}
 ---
 
 ## 1. Executive Summary
 
-A 5-class Diabetic Retinopathy classification model based on ResNet-50 was trained on the primary APTOS 2019 dataset and evaluated on both the internal validation split and the strictly held-out IDRiD external test set.
+A 5-class Diabetic Retinopathy classification model based on ResNet-50 was trained on the primary APTOS 2019 dataset and evaluated on the internal validation split.
 
-| Metric | Primary Validation (APTOS 20%) | External Benchmark (IDRiD Test) |
+| Metric | Primary Validation (APTOS Val) | {ext_col_header} |
 |:---|:---:|:---:|
-| **Sample Count ($N$)** | {len(val_m.get('confusion_matrix', []))} classes ($N=733$) | 103 images |
-| **Quadratic Weighted Kappa (QWK)** | **{val_m['qwk']:.4f}** | **{test_m['qwk']:.4f}** |
-| **Accuracy** | **{val_m['accuracy']*100:.2f}%** | **{test_m['accuracy']*100:.2f}%** |
-| **Macro F1** | **{val_m['macro_f1']:.4f}** | **{test_m['macro_f1']:.4f}** |
+| **Sample Count ($N$)** | {val_n} images | {ext_count_str} |
+| **Quadratic Weighted Kappa (QWK)** | **{val_m['qwk']:.4f}** | {ext_qwk_str} |
+| **Accuracy** | **{val_m['accuracy']*100:.2f}%** | {ext_acc_str} |
+| **Macro F1** | **{val_m['macro_f1']:.4f}** | {ext_f1_str} |
 
 > [!IMPORTANT]
 > **Dataset Separation Guarantee:**
-> - The primary model was trained exclusively on APTOS 2019 ($N=2,929$).
-> - Model selection and early stopping were monitored strictly on APTOS validation ($N=733$).
-> - IDRiD External Test ($N=103$) was evaluated strictly post-training as an external challenge benchmark.
+> - The primary model was trained exclusively on APTOS 2019 ($N={train_n}$).
+> - Model selection and early stopping were monitored strictly on APTOS validation ($N={val_n}$).
+> - IDRiD External Test was never used during training, tuning, or checkpoint selection.
 
 ---
 
@@ -660,7 +754,7 @@ A 5-class Diabetic Retinopathy classification model based on ResNet-50 was train
 - **Optimizer:** AdamW (Initial LR: {hp['initial_lr']:.1e}, Weight Decay: {hp['weight_decay']:.1e})
 - **LR Schedule:** CosineAnnealingLR
 - **Loss Function:** Class-Weighted CrossEntropyLoss (Inversely proportional to class frequencies)
-- **Early Stopping:** Patience = {hp['patience']} epochs on validation QWK
+- **Early Stopping:** Patience = {hp['patience']} epochs on validation QWK (min_delta = {hp.get('min_delta', 0.001)})
 - **Best Epoch:** {summary['best_epoch']} (Total epochs trained: {summary['total_epochs_trained']})
 - **Random Seed:** {summary['random_seed']}
 
@@ -673,7 +767,7 @@ A 5-class Diabetic Retinopathy classification model based on ResNet-50 was train
 """
     for g, name in ICDR_GRADES.items():
         key = f"grade_{g}_{name}"
-        if key in val_m["per_class"]:
+        if key in val_m.get("per_class", {}):
             stats = val_m["per_class"][key]
             md += f"| **Grade {g}** | {name} | {stats['precision']:.3f} | {stats['recall']:.3f} | {stats['f1']:.3f} | {stats['support']} |\n"
 
@@ -682,29 +776,42 @@ A 5-class Diabetic Retinopathy classification model based on ResNet-50 was train
 Rows: Ground Truth, Columns: Prediction
 
 ```
-{np.array(val_m['confusion_matrix'])}
+{np.array(val_m.get('confusion_matrix', []))}
 ```
 
 ---
 
 ## 4. External Test Performance (IDRiD External Test)
-
+"""
+    if test_m is not None:
+        md += """
 | Grade | Clinical Diagnosis | Precision | Recall (Sensitivity) | F1-Score | Support |
 |:---:|:---|:---:|:---:|:---:|:---:|
 """
-    for g, name in ICDR_GRADES.items():
-        key = f"grade_{g}_{name}"
-        if key in test_m["per_class"]:
-            stats = test_m["per_class"][key]
-            md += f"| **Grade {g}** | {name} | {stats['precision']:.3f} | {stats['recall']:.3f} | {stats['f1']:.3f} | {stats['support']} |\n"
+        for g, name in ICDR_GRADES.items():
+            key = f"grade_{g}_{name}"
+            if key in test_m.get("per_class", {}):
+                stats = test_m["per_class"][key]
+                md += f"| **Grade {g}** | {name} | {stats['precision']:.3f} | {stats['recall']:.3f} | {stats['f1']:.3f} | {stats['support']} |\n"
 
-    md += f"""
+        md += f"""
 ### Confusion Matrix (IDRiD External Test)
 
 ```
-{np.array(test_m['confusion_matrix'])}
+{np.array(test_m.get('confusion_matrix', []))}
 ```
+"""
+    else:
+        md += """
+> [!NOTE]
+> External test evaluation was not requested for this run.
+> To benchmark the saved best checkpoint against the held-out IDRiD test cohort, execute:
+> ```bash
+> python scripts/train.py --eval-only --eval-external
+> ```
+"""
 
+    md += """
 ---
 
 ## 5. Artifacts & Reproducibility Files

@@ -41,15 +41,46 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 def get_default_transforms(
     split: str = "train",
     image_size: Tuple[int, int] = (512, 512),
+    augmentation_config: Optional[Dict[str, Any]] = None,
+    horizontal_flip_prob: Optional[float] = None,
+    vertical_flip_prob: Optional[float] = None,
+    rotation_degrees: Optional[float] = None,
+    brightness_jitter: Optional[float] = None,
+    contrast_jitter: Optional[float] = None,
 ):
     """Build torchvision transformation pipeline for train, val, or test splits.
 
-    Applied to classification images. Augmentations are applied only to 'train';
-    'val' and 'test' splits are strictly deterministic.
+    Clinical & Scientific Rationale for Training Augmentation:
+    - Horizontal Flip (p=0.5): Retinal fundus photographs maintain biological validity under lateral
+      reflection. While the optic disc and macula switch sides (simulating OD vs OS eye symmetry),
+      diabetic retinal lesions (microaneurysms, hemorrhages, hard/soft exudates) are orientation-invariant.
+    - Vertical Flip (p=0.0 by default): Retinal fundus photography adheres to canonical vertical
+      polarity where the superior and inferior vascular arcades occupy distinct anatomical hemispheres.
+      Vertical inversion introduces anatomically atypical inverted orientations not encountered in clinical
+      practice. Kept configurable (default 0.0) for ablation studies.
+    - Rotation (±15°): Simulates slight patient head tilt during fundus camera positioning,
+      mitigating rotational overfitting while remaining within the circular FOV boundaries.
+    - ColorJitter (brightness=0.1, contrast=0.1): Models illumination and exposure variations
+      across clinical imaging sessions (e.g. flash intensity, pupil dilation quality, mild
+      media opacity/cataract) while strictly preserving color distinctions critical to DR
+      pathology (e.g., distinguishing reddish microaneurysms/hemorrhages from yellowish exudates).
+
+    Validation and testing splits are strictly deterministic: no augmentations are applied.
 
     Args:
         split: One of 'train', 'val', 'test'.
         image_size: Target (height, width).
+        augmentation_config: Optional dictionary containing augmentation parameters:
+            - 'horizontal_flip_prob' (float, default 0.5)
+            - 'vertical_flip_prob' (float, default 0.0)
+            - 'rotation_degrees' (float, default 15.0)
+            - 'brightness_jitter' (float, default 0.1)
+            - 'contrast_jitter' (float, default 0.1)
+        horizontal_flip_prob: Explicit override for horizontal flip probability.
+        vertical_flip_prob: Explicit override for vertical flip probability (default 0.0).
+        rotation_degrees: Explicit override for rotation angle range.
+        brightness_jitter: Explicit override for brightness jitter factor.
+        contrast_jitter: Explicit override for contrast jitter factor.
 
     Returns:
         torchvision.transforms.Compose instance.
@@ -58,15 +89,27 @@ def get_default_transforms(
         raise ImportError("PyTorch and torchvision are required for transformation pipelines.")
 
     if split == "train":
-        return transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.5),
-            transforms.RandomRotation(degrees=15),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1),
+        aug_cfg = augmentation_config or {}
+        hflip = horizontal_flip_prob if horizontal_flip_prob is not None else float(aug_cfg.get("horizontal_flip_prob", 0.5))
+        vflip = vertical_flip_prob if vertical_flip_prob is not None else float(aug_cfg.get("vertical_flip_prob", 0.0))
+        rot = rotation_degrees if rotation_degrees is not None else float(aug_cfg.get("rotation_degrees", 15.0))
+        b_jitter = brightness_jitter if brightness_jitter is not None else float(aug_cfg.get("brightness_jitter", 0.1))
+        c_jitter = contrast_jitter if contrast_jitter is not None else float(aug_cfg.get("contrast_jitter", 0.1))
+
+        transform_list = [transforms.ToPILImage()]
+        if hflip > 0:
+            transform_list.append(transforms.RandomHorizontalFlip(p=hflip))
+        if vflip > 0:
+            transform_list.append(transforms.RandomVerticalFlip(p=vflip))
+        if rot > 0:
+            transform_list.append(transforms.RandomRotation(degrees=rot))
+        if b_jitter > 0 or c_jitter > 0:
+            transform_list.append(transforms.ColorJitter(brightness=b_jitter, contrast=c_jitter))
+        transform_list.extend([
             transforms.ToTensor(),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ])
+        return transforms.Compose(transform_list)
     else:
         # Strictly deterministic for validation, external testing, and XAI evaluation
         return transforms.Compose([
@@ -89,19 +132,21 @@ class SynchronizedJointTransform:
 
     def __init__(
         self,
-        hflip_p: float = 0.5,
-        vflip_p: float = 0.5,
-        rotation_degrees: float = 15.0,
-        brightness_jitter: float = 0.1,
-        contrast_jitter: float = 0.1,
+        hflip_p: Optional[float] = None,
+        vflip_p: Optional[float] = None,
+        rotation_degrees: Optional[float] = None,
+        brightness_jitter: Optional[float] = None,
+        contrast_jitter: Optional[float] = None,
+        augmentation_config: Optional[Dict[str, Any]] = None,
     ):
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch and torchvision are required.")
-        self.hflip_p = hflip_p
-        self.vflip_p = vflip_p
-        self.rotation_degrees = rotation_degrees
-        self.brightness_jitter = brightness_jitter
-        self.contrast_jitter = contrast_jitter
+        aug_cfg = augmentation_config or {}
+        self.hflip_p = hflip_p if hflip_p is not None else float(aug_cfg.get("horizontal_flip_prob", 0.5))
+        self.vflip_p = vflip_p if vflip_p is not None else float(aug_cfg.get("vertical_flip_prob", 0.0))
+        self.rotation_degrees = rotation_degrees if rotation_degrees is not None else float(aug_cfg.get("rotation_degrees", 15.0))
+        self.brightness_jitter = brightness_jitter if brightness_jitter is not None else float(aug_cfg.get("brightness_jitter", 0.1))
+        self.contrast_jitter = contrast_jitter if contrast_jitter is not None else float(aug_cfg.get("contrast_jitter", 0.1))
 
     def __call__(
         self, image: Image.Image, masks: Dict[str, Image.Image]
@@ -330,6 +375,7 @@ def build_dataloaders(
     batch_size: int = 16,
     num_workers: int = 0,
     image_size: Tuple[int, int] = (512, 512),
+    augmentation_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[DataLoader, DataLoader, Optional[DataLoader]]:
     """Factory to construct train, val, and optional test DataLoaders."""
     train_df = pd.read_csv(train_manifest_path)
@@ -338,7 +384,7 @@ def build_dataloaders(
     train_ds = DRGradingDataset(
         manifest_df=train_df,
         project_root=project_root,
-        transform=get_default_transforms(split="train", image_size=image_size),
+        transform=get_default_transforms(split="train", image_size=image_size, augmentation_config=augmentation_config),
     )
     val_ds = DRGradingDataset(
         manifest_df=val_df,

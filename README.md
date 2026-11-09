@@ -26,10 +26,10 @@ Deep learning models achieve high diagnostic accuracy in Diabetic Retinopathy (D
 
 ## 2. Nine-Phase Research Roadmap
 
-* **Phase 1: Project Setup & Dataset Audit** *(Current Phase)* — Environment scaffolding, configuration, and structural audit of the IDRiD dataset.
-* **Phase 2: Data Preparation & Preprocessing** — Circular FOV masking, aspect-ratio preserving resizing ($512 \times 512$), normalization, and leakage-free dataset splitting.
-* **Phase 3: CNN Model Development** — Transfer learning and fine-tuning with ResNet-50 / EfficientNet backbones for 5-class ICDR grading (Grades 0–4).
-* **Phase 4: Model Evaluation** — Evaluation reporting Accuracy, Macro F1, Confusion Matrix, and Quadratic Weighted Kappa (QWK).
+* **Phase 1: Project Setup & Dataset Audit** *(Complete ✅)* — Multi-dataset auditing (APTOS 3,662 images + IDRiD 516 grading + 81 segmentation images), integrity verification, and cross-dataset duplicate auditing.
+* **Phase 2: Data Preparation & Preprocessing** *(Complete ✅)* — Aspect-ratio preserving resizing ($512 \times 512$), black border removal, circular FOV masking, synchronized multi-lesion mask alignment (MA, HE, EX, SE), and stratified 80/20 APTOS splitting.
+* **Phase 3: CNN Model Development** *(Current Phase — Pipeline Implemented & Verified ✅)* — Reusable ResNet-50 backbone with ImageNet pretraining, dropout (0.3), inverse class-weighted CrossEntropyLoss, AdamW optimizer, Cosine Annealing schedule, validation QWK early stopping with `min_delta`, target layer (`layer4`), and opt-in external evaluation.
+* **Phase 4: Model Evaluation** — Comprehensive diagnostic assessment (Accuracy, Macro F1, Sensitivity, Specificity, QWK, Confusion Matrix) on validation and external test sets.
 * **Phase 5: Grad-CAM Explainability** — Hooking target convolutional feature maps (`layer4`) to generate normalized activation maps for predicted classes.
 * **Phase 6: Localization Evaluation** — Multi-threshold binarization (top 5%, 10%, 20%) and IoU/Dice overlap computation against expert lesion masks (81 segmentation images). Grade 0 handled as N/A.
 * **Phase 7: Faithfulness Evaluation** — Deletion test with progressive salient region ablation ($10\%, 20\%, 30\%$) and area-matched random-region control.
@@ -45,31 +45,38 @@ DR-GradCAM-Evaluation/
 ├── configs/
 │   └── config.yaml                 # Centralized configuration (paths, hyperparameters, thresholds)
 ├── data/
-│   ├── raw/                        # Original IDRiD archive (git-ignored)
+│   ├── raw/                        # Original raw datasets (git-ignored)
 │   │   └── README.md               # Dataset download and placement instructions
-│   └── processed/                  # Processed splits, caches, aligned masks (git-ignored)
+│   └── processed/                  # Standardized 512x512 images, masks, and split manifests (git-ignored)
 ├── experiments/
-│   ├── checkpoints/                # Trained model weights (git-ignored)
+│   ├── checkpoints/                # Trained model weights (*.pth, git-ignored)
 │   └── visualizations/             # Generated Grad-CAM overlays & figures (git-ignored)
 ├── notebooks/                      # Colab/Jupyter research exploration notebooks
 ├── reports/
-│   ├── dataset_audit_report.md     # Multi-dataset audit findings (IDRiD + APTOS)
-│   ├── dataset_audit_report.json   # Machine-readable audit metrics
+│   ├── dataset_audit_report.md     # Phase 1 dataset audit report
 │   ├── idrid_seg_grading_matches.json # Empirical IDRiD segmentation-to-grading alignment
-│   └── preprocessing_report.md     # Phase 2 preprocessing and split stratification report
+│   ├── preprocessing_report.md     # Phase 2 preprocessing and split stratification report
+│   └── phase_3_training_report.md  # Phase 3 model training & evaluation report
 ├── scripts/
 │   ├── audit_dataset.py            # CLI entrypoint for dataset audit
-│   └── preprocess_data.py          # Phase 2 preprocessing and split generator
+│   ├── preprocess_data.py          # Phase 2 preprocessing and split generator
+│   └── train.py                    # Phase 3 CNN training and evaluation CLI
 ├── src/
 │   ├── __init__.py                 # Core package init
 │   ├── audit.py                    # Multi-dataset verification & leakage detection logic
-│   ├── dataset.py                  # PyTorch Datasets (DRGradingDataset, SegmentationLesionDataset)
-│   └── preprocessing.py            # Aspect-ratio preserving resizing, padding, mask alignment
+│   ├── dataset.py                  # PyTorch Datasets with configurable augmentations
+│   ├── model.py                    # ResNet-50 model builder & Grad-CAM target layer extractor
+│   ├── preprocessing.py            # Aspect-ratio preserving resizing, padding, mask alignment
+│   └── similarity.py               # Visual hash duplicate verification (pHash, dHash)
 ├── tests/
 │   ├── __init__.py
-│   ├── test_audit.py               # Dataset audit test suite (IDRiD & APTOS)
-│   └── test_preprocessing.py       # Preprocessing & spatial mask alignment test suite
+│   ├── test_audit.py               # Dataset audit test suite
+│   ├── test_model.py               # Model architecture & Grad-CAM layer tests
+│   ├── test_preprocessing.py       # Preprocessing & spatial mask alignment test suite
+│   ├── test_similarity.py          # Perceptual hash similarity tests
+│   └── test_train.py               # Training loop, metric, early stopping, and AMP tests
 ├── .gitignore                      # Git exclusion rules
+├── pytest.ini                      # Test runner configuration
 ├── requirements.txt                # Pinned dependencies
 └── README.md                       # Research specification & documentation
 ```
@@ -158,9 +165,65 @@ Audit results are written to:
 
 ---
 
-## 7. Running Tests
+## 7. Phase 3: CNN Model Development & Training
 
-Run the test suite to verify the audit engine and mock dataset validations:
+Phase 3 implements a research-quality transfer learning and fine-tuning pipeline based on **ResNet-50** (`torchvision.models.resnet50`) pre-trained on ImageNet.
+
+### Architectural & Training Specifications
+- **Input Dimensions:** $512 \times 512 \times 3$ with aspect-ratio preserving padding.
+- **Classification Head:** Linear layer ($2048 \to 5$) with dropout probability ($p=0.3$) mapping to ICDR Grades 0–4.
+- **Grad-CAM Target Layer:** `model.layer4` (2048-dim feature maps at $16 \times 16$ spatial resolution).
+- **Optimization:** AdamW ($\text{LR}=10^{-4}$, weight decay $=10^{-4}$) with Cosine Annealing learning rate schedule (`CosineAnnealingLR`).
+- **Class Imbalance:** Inverse class weighting ($w_c = \frac{N}{C \cdot N_c}$) applied to `nn.CrossEntropyLoss`.
+- **Early Stopping & Checkpointing:** Monitored strictly on **Validation Quadratic Weighted Kappa (QWK)** with configurable `min_delta` (default `0.001`) and patience (default 5 epochs). Checkpoints are saved atomically to `experiments/checkpoints/best_model_qwk.pth` only when the improvement criterion ($QWK \ge QWK_{\text{best}} + \text{min\_delta}$) is satisfied.
+- **Modern Mixed Precision (AMP):** Utilizes `torch.amp.autocast(device_type="cuda")` and `torch.amp.GradScaler("cuda")` when CUDA is available, while supporting deterministic CPU execution.
+- **Strict Dataset Isolation:** The model is trained exclusively on the primary APTOS 2019 dataset ($N=2,929$ train, $N=733$ val). External test evaluation on IDRiD ($N=103$) is **opt-in** and strictly evaluated post-training using the selected best checkpoint.
+
+### CLI Execution Commands
+
+#### 1. Full Model Training (Primary APTOS Train + Val)
+```bash
+python scripts/train.py
+```
+
+#### 2. Quick Dry-Run Smoke Test (Pipeline Verification)
+Runs 1 quick epoch on a truncated 16-sample subset to verify tensor shapes, gradient computation, and reporting without running full training:
+```bash
+python scripts/train.py --dry-run
+```
+
+#### 3. Training with Post-Training External Test Evaluation (IDRiD)
+Trains on APTOS, selects the best checkpoint via validation QWK, and subsequently evaluates the held-out IDRiD test cohort:
+```bash
+python scripts/train.py --eval-external
+```
+
+#### 4. Evaluate an Existing Checkpoint
+```bash
+# Evaluate on APTOS validation split:
+python scripts/train.py --eval-only
+
+# Evaluate on both APTOS validation and IDRiD external test:
+python scripts/train.py --eval-only --eval-external
+
+# Evaluate with custom checkpoint:
+python scripts/train.py --eval-only --eval-external --checkpoint-path experiments/checkpoints/best_model_qwk.pth
+```
+
+### Artifact & Output Locations
+- **Best Model Checkpoint:** `experiments/checkpoints/best_model_qwk.pth`
+- **Training Epoch History:** `experiments/training_history.csv`
+- **Evaluation Metrics JSON:** `experiments/evaluation_metrics.json`
+- **Phase 3 Markdown Report:** `reports/phase_3_training_report.md`
+
+> [!NOTE]
+> **Current Project Status:** Phase 3 model architecture, data loaders, training engine, early stopping with `min_delta`, AMP acceleration, and unit tests are fully implemented and verified. Real model convergence weights and evaluation metrics will be produced when full training is launched on GPU hardware (e.g., Google Colab with Tesla T4).
+
+---
+
+## 8. Running Tests
+
+Run the complete test suite across audit, preprocessing, similarity, model, and training components:
 
 ```bash
 pytest tests/ -v
@@ -168,7 +231,7 @@ pytest tests/ -v
 
 ---
 
-## 8. Academic & Medical Disclaimer
+## 9. Academic & Medical Disclaimer
 
 This software and research pipeline is developed strictly for academic investigation and empirical evaluation of Explainable Artificial Intelligence (XAI) methods. It is **not** certified as a medical device and must **never** be used for clinical diagnosis, patient management, or real-world treatment planning.
 
