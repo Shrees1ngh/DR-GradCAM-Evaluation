@@ -83,6 +83,23 @@ model:
   target_conv_layer: "layer4"     # ResNet-50 final convolutional block
 
 # ------------------------------------------------------------------------------
+# Model Training Hyperparameters (Phase 3)
+# ------------------------------------------------------------------------------
+training:
+  batch_size: 8                   # Default mini-batch size (suitable for Tesla T4 GPU 16GB at 512x512)
+  epochs: 25
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  scheduler: "cosine"             # CosineAnnealingLR or ReduceLROnPlateau
+  patience: 5                     # Early stopping patience based on validation QWK
+  min_delta: 0.001
+  mixed_precision: true           # FP16 autocast when CUDA is available
+  class_weighted_loss: true       # Inversely weighted CrossEntropyLoss for class imbalance
+  num_workers: 0                  # Worker count for DataLoader (0 for Windows compatibility)
+  checkpoint_metric: "val_qwk"
+
+# ------------------------------------------------------------------------------
 # Explainability (Grad-CAM)
 # ------------------------------------------------------------------------------
 explainability:

@@ -68,6 +68,8 @@ experiments/checkpoints/*
 !experiments/checkpoints/.gitkeep
 
 # Experiment Outputs, Logs & Visualizations
+experiments/*.json
+experiments/*.csv
 experiments/visualizations/*
 !experiments/visualizations/.gitkeep
 logs/
