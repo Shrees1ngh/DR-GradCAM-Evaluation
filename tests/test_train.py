@@ -338,3 +338,46 @@ def test_configurable_augmentation():
     # Validation and test must produce identical output on identical input (deterministic)
     assert torch.allclose(t_val, t_test)
 
+
+def test_output_dir_cli_arg_and_auto_creation(tmp_path: Path):
+    """Verify --output-dir argument parsing and automatic directory creation."""
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", type=Path, default=None)
+
+    # 1. Default is None (sensible default for local execution)
+    args_default = parser.parse_args([])
+    assert args_default.output_dir is None
+
+    # 2. Configurable via CLI
+    drive_output = tmp_path / "content" / "drive" / "MyDrive" / "DR-GradCAM" / "outputs"
+    args_drive = parser.parse_args(["--output-dir", str(drive_output)])
+    assert args_drive.output_dir == drive_output
+
+    # 3. Target subdirectories are created automatically even if deep/nested
+    checkpoints_dir = drive_output / "checkpoints"
+    reports_dir = drive_output / "reports"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    assert drive_output.exists()
+    assert checkpoints_dir.exists()
+    assert reports_dir.exists()
+
+
+def test_save_checkpoint_creates_missing_directories(tmp_path: Path):
+    """Verify save_checkpoint automatically creates missing nested parent directories."""
+    torch = pytest.importorskip("torch")
+
+    deep_ckpt_path = tmp_path / "deeply" / "nested" / "drive" / "folder" / "model.pth"
+    assert not deep_ckpt_path.parent.exists()
+
+    state = {"epoch": 1, "qwk": 0.9}
+    save_checkpoint(state, deep_ckpt_path)
+
+    assert deep_ckpt_path.exists()
+    loaded = torch.load(deep_ckpt_path, weights_only=False)
+    assert loaded["qwk"] == 0.9
+
+

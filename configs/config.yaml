@@ -152,6 +152,7 @@ statistics:
 # Output Directories
 # ------------------------------------------------------------------------------
 outputs:
+  output_dir: null                    # Optional base output directory (e.g. "/content/drive/MyDrive/DR-GradCAM-Evaluation/outputs" in Google Colab). When null, defaults to local project root.
   reports_dir: "reports"
   checkpoints_dir: "experiments/checkpoints"
   visualizations_dir: "experiments/visualizations"

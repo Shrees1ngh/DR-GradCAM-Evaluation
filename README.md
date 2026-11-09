@@ -175,7 +175,7 @@ Phase 3 implements a research-quality transfer learning and fine-tuning pipeline
 - **Grad-CAM Target Layer:** `model.layer4` (2048-dim feature maps at $16 \times 16$ spatial resolution).
 - **Optimization:** AdamW ($\text{LR}=10^{-4}$, weight decay $=10^{-4}$) with Cosine Annealing learning rate schedule (`CosineAnnealingLR`).
 - **Class Imbalance:** Inverse class weighting ($w_c = \frac{N}{C \cdot N_c}$) applied to `nn.CrossEntropyLoss`.
-- **Early Stopping & Checkpointing:** Monitored strictly on **Validation Quadratic Weighted Kappa (QWK)** with configurable `min_delta` (default `0.001`) and patience (default 5 epochs). Checkpoints are saved atomically to `experiments/checkpoints/best_model_qwk.pth` only when the improvement criterion ($QWK \ge QWK_{\text{best}} + \text{min\_delta}$) is satisfied.
+- **Early Stopping & Checkpointing:** Monitored strictly on **Validation Quadratic Weighted Kappa (QWK)** with configurable `min_delta` (default `0.001`) and patience (default 5 epochs). The training script saves the best checkpoint whenever validation QWK strictly improves ($QWK > QWK_{\text{best}}$). `min_delta` is used only for resetting the early-stopping patience benchmark ($QWK \ge QWK_{\text{benchmark}} + \text{min\_delta}$), not for deciding whether to save a checkpoint.
 - **Modern Mixed Precision (AMP):** Utilizes `torch.amp.autocast(device_type="cuda")` and `torch.amp.GradScaler("cuda")` when CUDA is available, while supporting deterministic CPU execution.
 - **Strict Dataset Isolation:** The model is trained exclusively on the primary APTOS 2019 dataset ($N=2,929$ train, $N=733$ val). External test evaluation on IDRiD ($N=103$) is **opt-in** and strictly evaluated post-training using the selected best checkpoint.
 
@@ -198,7 +198,13 @@ Trains on APTOS, selects the best checkpoint via validation QWK, and subsequentl
 python scripts/train.py --eval-external
 ```
 
-#### 4. Evaluate an Existing Checkpoint
+#### 4. Training with Output Persistence to Google Drive (Google Colab)
+Safely saves checkpoints, training history, and evaluation reports directly to Google Drive while also keeping local runtime copies:
+```bash
+python scripts/train.py --output-dir /content/drive/MyDrive/DR-GradCAM-Evaluation/outputs
+```
+
+#### 5. Evaluate an Existing Checkpoint
 ```bash
 # Evaluate on APTOS validation split:
 python scripts/train.py --eval-only
@@ -211,10 +217,18 @@ python scripts/train.py --eval-only --eval-external --checkpoint-path experiment
 ```
 
 ### Artifact & Output Locations
-- **Best Model Checkpoint:** `experiments/checkpoints/best_model_qwk.pth`
-- **Training Epoch History:** `experiments/training_history.csv`
-- **Evaluation Metrics JSON:** `experiments/evaluation_metrics.json`
-- **Phase 3 Markdown Report:** `reports/phase_3_training_report.md`
+Output directories are fully configurable via the `--output-dir` CLI flag or `outputs.output_dir` in `configs/config.yaml`. The target directory structure is automatically created if it does not exist:
+- **Default Local Output Locations:**
+  - **Best Model Checkpoint:** `experiments/checkpoints/best_model_qwk.pth`
+  - **Training Epoch History:** `experiments/training_history.csv`
+  - **Evaluation Metrics JSON:** `experiments/evaluation_metrics.json`
+  - **Phase 3 Markdown Report:** `reports/phase_3_training_report.md`
+- **Google Drive Output Structure (when `--output-dir` is configured):**
+  - **Checkpoints:** `<output-dir>/checkpoints/best_model_qwk.pth`
+  - **Training History:** `<output-dir>/training_history.csv`
+  - **Evaluation Metrics JSON:** `<output-dir>/evaluation_metrics.json`
+  - **Phase 3 Report:** `<output-dir>/reports/phase_3_training_report.md`
+  *(Local runtime copies are also simultaneously preserved.)*
 
 > [!NOTE]
 > **Current Project Status:** Phase 3 model architecture, data loaders, training engine, early stopping with `min_delta`, AMP acceleration, and unit tests are fully implemented and verified. Real model convergence weights and evaluation metrics will be produced when full training is launched on GPU hardware (e.g., Google Colab with Tesla T4).

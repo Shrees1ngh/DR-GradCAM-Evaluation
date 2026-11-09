@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -274,7 +275,10 @@ def save_checkpoint(
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = checkpoint_path.with_suffix(".tmp")
     torch.save(state, tmp_path)
-    tmp_path.replace(checkpoint_path)
+    try:
+        tmp_path.replace(checkpoint_path)
+    except OSError:
+        shutil.move(str(tmp_path), str(checkpoint_path))
     logging.info(f"Checkpoint successfully saved: {checkpoint_path}")
 
 
@@ -295,6 +299,7 @@ def main() -> int:
     parser.add_argument("--eval-only", action="store_true", help="Skip training; evaluate existing checkpoint")
     parser.add_argument("--eval-external", action="store_true", help="Explicitly evaluate strictly held-out IDRiD external test set")
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Custom checkpoint path to load or save")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Base directory for training outputs (e.g. Google Drive in Colab)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
 
     args = parser.parse_args()
@@ -437,23 +442,46 @@ def main() -> int:
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
-    # Output paths
-    checkpoints_dir = PROJECT_ROOT / config.get("outputs", {}).get("checkpoints_dir", "experiments/checkpoints")
-    experiments_dir = PROJECT_ROOT / "experiments"
-    reports_dir = PROJECT_ROOT / config.get("outputs", {}).get("reports_dir", "reports")
-    checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    experiments_dir.mkdir(parents=True, exist_ok=True)
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    # Output paths resolution
+    # Order of precedence: --output-dir CLI arg -> config.yaml outputs.output_dir -> default (PROJECT_ROOT)
+    output_dir_arg = args.output_dir or config.get("outputs", {}).get("output_dir")
+    output_dir = Path(output_dir_arg).resolve() if output_dir_arg else None
 
-    best_checkpoint_path = args.checkpoint_path or (checkpoints_dir / "best_model_qwk.pth")
+    # Local project paths (sensible default for local execution)
+    local_checkpoints_dir = (PROJECT_ROOT / config.get("outputs", {}).get("checkpoints_dir", "experiments/checkpoints")).resolve()
+    local_experiments_dir = (PROJECT_ROOT / "experiments").resolve()
+    local_reports_dir = (PROJECT_ROOT / config.get("outputs", {}).get("reports_dir", "reports")).resolve()
+
+    local_checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    local_experiments_dir.mkdir(parents=True, exist_ok=True)
+    local_reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # When an external output directory is configured (e.g. Google Drive in Colab), create it automatically
+    if output_dir is not None and output_dir != PROJECT_ROOT.resolve():
+        target_checkpoints_dir = output_dir / "checkpoints"
+        target_experiments_dir = output_dir
+        target_reports_dir = output_dir / "reports"
+
+        target_checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        target_experiments_dir.mkdir(parents=True, exist_ok=True)
+        target_reports_dir.mkdir(parents=True, exist_ok=True)
+        logging.info(f"Target output directory configured: {output_dir} (Drive directory created/verified)")
+    else:
+        target_checkpoints_dir = local_checkpoints_dir
+        target_experiments_dir = local_experiments_dir
+        target_reports_dir = local_reports_dir
+
+    best_checkpoint_path = args.checkpoint_path or (target_checkpoints_dir / "best_model_qwk.pth")
+    local_checkpoint_path = local_checkpoints_dir / "best_model_qwk.pth"
 
     # Handle eval-only mode
     if args.eval_only:
-        logging.info(f"Evaluation-only mode. Loading checkpoint from: {best_checkpoint_path}")
-        if not best_checkpoint_path.exists():
-            logging.error(f"Checkpoint not found at: {best_checkpoint_path}")
+        eval_ckpt_path = best_checkpoint_path if best_checkpoint_path.exists() else local_checkpoint_path
+        logging.info(f"Evaluation-only mode. Loading checkpoint from: {eval_ckpt_path}")
+        if not eval_ckpt_path.exists():
+            logging.error(f"Checkpoint not found at: {eval_ckpt_path}")
             return 1
-        ckpt = torch.load(best_checkpoint_path, map_location=device)
+        ckpt = torch.load(eval_ckpt_path, map_location=device)
         model.load_state_dict(ckpt["model_state_dict"])
 
         val_loss, val_metrics, _, _ = evaluate(model, val_loader, criterion, device, "Validation")
@@ -551,6 +579,8 @@ def main() -> int:
                 "timestamp": datetime.now().isoformat(),
             }
             save_checkpoint(checkpoint_state, best_checkpoint_path)
+            if local_checkpoint_path.resolve() != best_checkpoint_path.resolve():
+                save_checkpoint(checkpoint_state, local_checkpoint_path)
             logging.info(
                 f"--> Saved best model checkpoint at epoch {epoch:02d} "
                 f"(Highest observed QWK: {best_val_qwk:.4f}, gain: {actual_gain:+.4f})"
@@ -585,12 +615,17 @@ def main() -> int:
 
     # 9. Save History CSV
     history_df = pd.DataFrame(history)
-    history_csv = experiments_dir / "training_history.csv"
+    history_csv = target_experiments_dir / "training_history.csv"
     history_df.to_csv(history_csv, index=False)
     logging.info(f"Training history saved: {history_csv}")
+    if local_experiments_dir.resolve() != target_experiments_dir.resolve():
+        local_history_csv = local_experiments_dir / "training_history.csv"
+        history_df.to_csv(local_history_csv, index=False)
+        logging.info(f"Training history also saved locally: {local_history_csv}")
 
     # 10. Final Evaluation using Selected Best Checkpoint
-    best_ckpt = torch.load(best_checkpoint_path, map_location=device)
+    load_ckpt_path = best_checkpoint_path if best_checkpoint_path.exists() else local_checkpoint_path
+    best_ckpt = torch.load(load_ckpt_path, map_location=device)
     model.load_state_dict(best_ckpt["model_state_dict"])
 
     # Re-evaluate validation with best model to confirm exact reproduction
@@ -642,15 +677,24 @@ def main() -> int:
         "idrid_external_test_metrics": idrid_metrics,
     }
 
-    metrics_json = experiments_dir / "evaluation_metrics.json"
+    metrics_json = target_experiments_dir / "evaluation_metrics.json"
     with open(metrics_json, "w", encoding="utf-8") as f:
         json.dump(summary_data, f, indent=2)
     logging.info(f"Evaluation metrics JSON saved: {metrics_json}")
+    if local_experiments_dir.resolve() != target_experiments_dir.resolve():
+        local_metrics_json = local_experiments_dir / "evaluation_metrics.json"
+        with open(local_metrics_json, "w", encoding="utf-8") as f:
+            json.dump(summary_data, f, indent=2)
+        logging.info(f"Evaluation metrics JSON also saved locally: {local_metrics_json}")
 
     # 12. Generate Phase 3 Markdown Report
-    report_md_path = reports_dir / "phase_3_training_report.md"
+    report_md_path = target_reports_dir / "phase_3_training_report.md"
     generate_training_report(summary_data, history_df, report_md_path)
     logging.info(f"Phase 3 training report written to: {report_md_path}")
+    if local_reports_dir.resolve() != target_reports_dir.resolve():
+        local_report_path = local_reports_dir / "phase_3_training_report.md"
+        generate_training_report(summary_data, history_df, local_report_path)
+        logging.info(f"Phase 3 training report also written locally: {local_report_path}")
 
     banner_title = "PHASE 3: CNN MODEL DEVELOPMENT & TRAINING SUMMARY"
     if args.dry_run:
@@ -667,6 +711,8 @@ def main() -> int:
     else:
         print("IDRiD External Test:     Skipped (opt-in with --eval-external)")
     print(f"Best Checkpoint:         {best_checkpoint_path}")
+    if local_checkpoint_path.resolve() != best_checkpoint_path.resolve():
+        print(f"Local Checkpoint:        {local_checkpoint_path}")
     print(f"Metrics JSON:            {metrics_json}")
     print(f"Report:                  {report_md_path}")
     if args.dry_run:
