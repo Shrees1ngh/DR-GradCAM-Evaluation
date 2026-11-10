@@ -3,7 +3,10 @@ torch>=2.0.0
 torchvision>=0.15.0
 
 # Explainability
-pytorch-grad-cam>=0.2.1
+grad-cam>=1.5.0
+
+# Web Application
+streamlit>=1.30.0
 
 # Scientific Computing & Data Analysis
 numpy>=1.24.0
