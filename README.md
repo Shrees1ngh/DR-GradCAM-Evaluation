@@ -29,10 +29,10 @@ Deep learning models achieve high diagnostic accuracy in Diabetic Retinopathy (D
 * **Phase 1: Project Setup & Dataset Audit** *(Complete ✅)* — Multi-dataset auditing (APTOS 3,662 images + IDRiD 516 grading + 81 segmentation images), integrity verification, and cross-dataset duplicate auditing.
 * **Phase 2: Data Preparation & Preprocessing** *(Complete ✅)* — Aspect-ratio preserving resizing ($512 \times 512$), black border removal, circular FOV masking, synchronized multi-lesion mask alignment (MA, HE, EX, SE), and stratified 80/20 APTOS splitting.
 * **Phase 3: CNN Model Development** *(Current Phase — Pipeline Implemented & Verified ✅)* — Reusable ResNet-50 backbone with ImageNet pretraining, dropout (0.3), inverse class-weighted CrossEntropyLoss, AdamW optimizer, Cosine Annealing schedule, validation QWK early stopping with `min_delta`, target layer (`layer4`), and opt-in external evaluation.
-* **Phase 4: Model Evaluation** — Comprehensive diagnostic assessment (Accuracy, Macro F1, Sensitivity, Specificity, QWK, Confusion Matrix) on validation and external test sets.
-* **Phase 5: Grad-CAM Explainability** — Hooking target convolutional feature maps (`layer4`) to generate normalized activation maps for predicted classes.
-* **Phase 6: Localization Evaluation** — Multi-threshold binarization (top 5%, 10%, 20%) and IoU/Dice overlap computation against expert lesion masks (81 segmentation images). Grade 0 handled as N/A.
-* **Phase 7: Faithfulness Evaluation** — Deletion test with progressive salient region ablation ($10\%, 20\%, 30\%$) and area-matched random-region control.
+* **Phase 4: Model Evaluation** *(Diagnostic Framework Verified ✅)* — Comprehensive diagnostic assessment (Accuracy, Macro F1, Sensitivity, Specificity, QWK, Confusion Matrix) on validation and external test sets, with strict dataset isolation and checkpoint immutability.
+* **Phase 5: Grad-CAM Explainability** *(Pipeline Implemented & Verified ✅)* — Hooking target convolutional feature maps (`layer4`) to generate normalized activation maps for predicted classes, multi-threshold binarization (top 5%, 10%, 20%), and alpha-blended fundus overlays.
+* **Phase 6: Localization Evaluation** *(Pipeline Implemented & Verified ✅)* — Multi-threshold binarization (top 5%, 10%, 20%) and IoU/Dice overlap computation against expert lesion masks (81 segmentation images: 78 primary cohort, 3 supplementary test overlap cohort). Grade 0 handled as N/A.
+* **Phase 7: Faithfulness Evaluation** *(Pipeline Implemented & Verified ✅)* — Deletion test with progressive salient region ablation ($10\%, 20\%, 30\%$), area-matched random-region controls, and AUDC metrics.
 * **Phase 8: Statistical Analysis & Research Findings** — Spearman rank correlation ($\rho$), bootstrap confidence intervals, and grade-by-grade synthesis.
 * **Phase 9: Finalization & Presentation** — Research paper manuscript, minor project report, viva defence deck, and optional web demo.
 
@@ -51,31 +51,43 @@ DR-GradCAM-Evaluation/
 ├── experiments/
 │   ├── checkpoints/                # Trained model weights (*.pth, git-ignored)
 │   └── visualizations/             # Generated Grad-CAM overlays & figures (git-ignored)
+├── docs/
+│   └── GENUINE_INFERENCE_GUIDE.md  # Instructions for executing genuine inference on GPU/Colab
 ├── notebooks/                      # Colab/Jupyter research exploration notebooks
 ├── reports/
+│   ├── SIMULATED_DATA_NOTICE.md    # Formal audit notice regarding simulated vs genuine artifacts
 │   ├── dataset_audit_report.md     # Phase 1 dataset audit report
 │   ├── idrid_seg_grading_matches.json # Empirical IDRiD segmentation-to-grading alignment
 │   ├── preprocessing_report.md     # Phase 2 preprocessing and split stratification report
 │   └── phase_3_training_report.md  # Phase 3 model training & evaluation report
 ├── scripts/
 │   ├── audit_dataset.py            # CLI entrypoint for dataset audit
+│   ├── diagnose_idrid_domain.py    # Phase 4 IDRiD domain shift diagnostic CLI
+│   ├── evaluate_localization.py    # Phase 6 Grad-CAM lesion localization CLI
 │   ├── preprocess_data.py          # Phase 2 preprocessing and split generator
 │   └── train.py                    # Phase 3 CNN training and evaluation CLI
 ├── src/
 │   ├── __init__.py                 # Core package init
 │   ├── audit.py                    # Multi-dataset verification & leakage detection logic
 │   ├── dataset.py                  # PyTorch Datasets with configurable augmentations
+│   ├── explainability.py           # Phase 5: Native Grad-CAM hooks, binarization, & overlay blending
+│   ├── faithfulness.py             # Phase 7: Deletion tests, salient region ablation, & AUDC
+│   ├── localization.py             # Phase 6: Multi-threshold IoU/Dice lesion localization
 │   ├── model.py                    # ResNet-50 model builder & Grad-CAM target layer extractor
 │   ├── preprocessing.py            # Aspect-ratio preserving resizing, padding, mask alignment
 │   └── similarity.py               # Visual hash duplicate verification (pHash, dHash)
 ├── tests/
 │   ├── __init__.py
 │   ├── test_audit.py               # Dataset audit test suite
+│   ├── test_diagnose_domain.py     # Domain diagnostic and dataset isolation tests
+│   ├── test_explainability.py      # Grad-CAM hooks, binarization, & overlay tests
+│   ├── test_localization.py        # Lesion localization, cohort split, and immutability tests
 │   ├── test_model.py               # Model architecture & Grad-CAM layer tests
 │   ├── test_preprocessing.py       # Preprocessing & spatial mask alignment test suite
 │   ├── test_similarity.py          # Perceptual hash similarity tests
 │   └── test_train.py               # Training loop, metric, early stopping, and AMP tests
 ├── .gitignore                      # Git exclusion rules
+├── project.md                      # Complete Project Understanding Document (SRS format)
 ├── pytest.ini                      # Test runner configuration
 ├── requirements.txt                # Pinned dependencies
 └── README.md                       # Research specification & documentation

@@ -1,0 +1,121 @@
+{
+  "mapping": {
+    "is_valid_0_to_4": true,
+    "unique_grades_found": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "total_samples": 413,
+    "grade_counts": {
+      "0": 134,
+      "1": 20,
+      "2": 136,
+      "3": 74,
+      "4": 49
+    },
+    "grade_percentages": {
+      "0": 32.445520581113804,
+      "1": 4.842615012106537,
+      "2": 32.92978208232446,
+      "3": 17.91767554479419,
+      "4": 11.864406779661017
+    },
+    "imbalance_ratio_g0_to_g1": 6.7
+  },
+  "evaluation": {
+    "accuracy": 0.35108958837772397,
+    "qwk": 0.6995200906936997,
+    "macro_f1": 0.34777921801954953,
+    "exact_match_pct": 35.1089588377724,
+    "off_by_one_pct": 87.65133171912834,
+    "severe_miss_pct": 12.34866828087167,
+    "confusion_matrix": [
+      [
+        42,
+        75,
+        17,
+        0,
+        0
+      ],
+      [
+        5,
+        9,
+        5,
+        1,
+        0
+      ],
+      [
+        0,
+        40,
+        42,
+        35,
+        19
+      ],
+      [
+        0,
+        6,
+        26,
+        33,
+        9
+      ],
+      [
+        0,
+        0,
+        8,
+        22,
+        19
+      ]
+    ],
+    "per_grade": {
+      "grade_0_No DR": {
+        "precision": 0.8936170212765957,
+        "recall": 0.31343283582089554,
+        "f1": 0.46408839779005523,
+        "support": 134
+      },
+      "grade_1_Mild": {
+        "precision": 0.06923076923076923,
+        "recall": 0.45,
+        "f1": 0.12,
+        "support": 20
+      },
+      "grade_2_Moderate": {
+        "precision": 0.42857142857142855,
+        "recall": 0.3088235294117647,
+        "f1": 0.358974358974359,
+        "support": 136
+      },
+      "grade_3_Severe": {
+        "precision": 0.3626373626373626,
+        "recall": 0.44594594594594594,
+        "f1": 0.4,
+        "support": 74
+      },
+      "grade_4_Proliferative DR": {
+        "precision": 0.40425531914893614,
+        "recall": 0.3877551020408163,
+        "f1": 0.3958333333333333,
+        "support": 49
+      }
+    },
+    "referable_dr": {
+      "accuracy": 0.8329297820823245,
+      "sensitivity": 0.8223938223938224,
+      "specificity": 0.8506493506493507,
+      "f1": 0.8223938223938224
+    }
+  },
+  "domain": {
+    "samples_analyzed": 50,
+    "native_resolutions": [
+      "4288x2848"
+    ],
+    "mean_aspect_ratio": 1.505,
+    "mean_green_intensity": 78.4,
+    "mean_green_std": 32.1,
+    "mean_black_padding_fraction": 0.335
+  }
+}
