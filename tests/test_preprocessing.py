@@ -324,3 +324,66 @@ def test_preprocess_cli_idrid_only_execution(tmp_path: Path):
     assert (processed_dir / "idrid" / "external_test.csv").exists()
     assert (processed_dir / "idrid" / "segmentation_manifest.csv").exists()
 
+
+def test_extract_retinal_fov_mask_holes_filled_and_padding_zeroed():
+    """Verify extract_retinal_fov_mask fills interior dark lesions and zeros padded borders."""
+    from src.preprocessing import extract_retinal_fov_mask
+
+    # 100x100 canvas with a circular retina of radius 35 centered at (50, 50)
+    canvas = np.zeros((100, 100, 3), dtype=np.uint8)
+    y, x = np.ogrid[:100, :100]
+    circle_mask = (y - 50)**2 + (x - 50)**2 <= 35**2
+    canvas[circle_mask] = [120, 160, 40]  # Green channel bright
+
+    # Introduce a dark internal lesion (e.g. dense haemorrhage where green channel <= 5)
+    canvas[48:53, 48:53] = [5, 2, 0]
+
+    pad_offsets = (10, 10, 12, 12)
+    fov_mask = extract_retinal_fov_mask(canvas, threshold=10, pad_offsets=pad_offsets)
+
+    assert fov_mask.shape == (100, 100)
+    assert set(np.unique(fov_mask)).issubset({0, 1})
+
+    # The dark lesion inside the retina must be FILLED (1, not punched out as 0)
+    assert np.all(fov_mask[48:53, 48:53] == 1)
+
+    # Padding borders must be strictly 0
+    assert np.all(fov_mask[:10, :] == 0)
+    assert np.all(fov_mask[90:, :] == 0)
+    assert np.all(fov_mask[:, :12] == 0)
+    assert np.all(fov_mask[:, 88:] == 0)
+
+    # The outer 4 corners must be strictly 0
+    assert fov_mask[1, 1] == 0
+    assert fov_mask[1, 98] == 0
+    assert fov_mask[98, 1] == 0
+    assert fov_mask[98, 98] == 0
+
+
+def test_verify_splits_leakage_idrid_only_skipped_and_overlap_detection():
+    """Verify verify_splits_leakage distinguishes SKIPPED from PASSED and detects IDRiD overlap."""
+    from scripts.preprocess_data import verify_splits_leakage
+
+    # Scenario A: --idrid-only mode (APTOS empty)
+    empty_aptos = pd.DataFrame()
+    idrid_train_clean = pd.DataFrame({"image_id": ["IDRiD_001", "IDRiD_002"], "original_id": ["IDRiD_001", "IDRiD_002"]})
+    idrid_test_clean = pd.DataFrame({"image_id": ["IDRiD_414", "IDRiD_415"], "original_id": ["IDRiD_414", "IDRiD_415"]})
+
+    res_partial = verify_splits_leakage(empty_aptos, empty_aptos, idrid_train_clean, idrid_test_clean)
+    assert res_partial["is_leakage_free"] is True
+    assert "PARTIALLY EVALUATED" in res_partial["overall_status"]
+    assert "Zero Leakage" not in res_partial["overall_status"]
+    assert res_partial["checks"][0]["status"] == "SKIPPED"
+    assert res_partial["checks"][1]["status"] == "SKIPPED"
+    assert res_partial["checks"][2]["status"] == "PASSED"
+
+    # Scenario B: Critical Leakage between IDRiD Train and Test
+    idrid_train_leak = pd.DataFrame({"image_id": ["IDRiD_001", "IDRiD_414"]})
+    idrid_test_leak = pd.DataFrame({"image_id": ["IDRiD_414", "IDRiD_415"]})
+
+    res_leak = verify_splits_leakage(empty_aptos, empty_aptos, idrid_train_leak, idrid_test_leak)
+    assert res_leak["is_leakage_free"] is False
+    assert "FAILED" in res_leak["overall_status"]
+    assert res_leak["checks"][2]["status"] == "FAILED"
+    assert "IDRiD_414" in res_leak["checks"][2]["details"]
+

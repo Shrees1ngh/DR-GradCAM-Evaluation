@@ -35,9 +35,9 @@ except ImportError:
 
 
 def build_model(
-    num_classes: int = 5,
-    pretrained: bool = True,
-    dropout_rate: float = 0.3,
+    num_classes: Optional[int] = None,
+    pretrained: Optional[bool] = None,
+    dropout_rate: Optional[float] = None,
     config: Optional[dict] = None,
 ) -> Any:
     """Build and configure ResNet-50 for Diabetic Retinopathy classification.
@@ -48,9 +48,10 @@ def build_model(
     Args:
         num_classes: Number of output DR grade classes (default: 5 for ICDR).
         pretrained: Whether to initialize with ImageNet pretrained weights.
+                    If explicitly False, avoids downloading ImageNet weights.
         dropout_rate: Dropout probability applied before the final linear layer (default: 0.3).
         config: Optional project configuration dictionary. If provided, values under
-                `config["model"]` override the default arguments.
+                `config["model"]` supply defaults for arguments not explicitly provided.
 
     Returns:
         Configured PyTorch nn.Module (ResNet-50 instance).
@@ -64,12 +65,14 @@ def build_model(
             "Please install torch and torchvision."
         )
 
-    # Allow configuration dictionary overrides
-    if config is not None:
-        model_cfg = config.get("model", {})
-        num_classes = model_cfg.get("num_classes", num_classes)
-        pretrained = model_cfg.get("pretrained", pretrained)
-        dropout_rate = model_cfg.get("dropout_rate", dropout_rate)
+    # Resolve arguments: explicit arguments take precedence over config defaults
+    model_cfg = config.get("model", {}) if config is not None else {}
+    if num_classes is None:
+        num_classes = model_cfg.get("num_classes", 5)
+    if pretrained is None:
+        pretrained = model_cfg.get("pretrained", True)
+    if dropout_rate is None:
+        dropout_rate = model_cfg.get("dropout_rate", 0.3)
 
     weights = ResNet50_Weights.DEFAULT if pretrained else None
     model = models.resnet50(weights=weights)

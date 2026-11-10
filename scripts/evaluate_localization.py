@@ -108,12 +108,16 @@ def verify_state_dict_unchanged(
 def load_cohort_and_grade_mapping(
     matches_json_path: Path,
     train_manifest_path: Optional[Path] = None,
+    test_manifest_path: Optional[Path] = None,
 ) -> Tuple[Dict[str, str], Dict[str, Optional[int]]]:
     """Load pre-computed cross-match data and verified disease grades for IDRiD segmentation images.
 
     Returns:
         cohort_map: Mapping from segmentation image stem (e.g. 'IDRiD_01') to cohort origin string.
-        grade_map: Mapping from segmentation image stem to verified ground-truth grade (or None if unavailable).
+        grade_map: Mapping from segmentation image stem to verified ground-truth grade:
+            - 57 matched training images: verified grade from IDRiD training labels.
+            - 3 supplementary test images: verified grade from IDRiD test labels.
+            - 21 unique images: None (strictly marked as unavailable; never invented/substituted).
     """
     cohort_map: Dict[str, str] = {}
     grade_map: Dict[str, Optional[int]] = {}
@@ -134,15 +138,15 @@ def load_cohort_and_grade_mapping(
 
     # Load verified training labels for the 57 matched training images
     training_labels: Dict[str, int] = {}
-    search_paths = []
+    train_search_paths = []
     if train_manifest_path:
-        search_paths.append(train_manifest_path)
-    search_paths.extend([
+        train_search_paths.append(train_manifest_path)
+    train_search_paths.extend([
         PROJECT_ROOT / "data" / "processed" / "idrid" / "external_train.csv",
         PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "a. IDRiD_Disease Grading_Training Labels.csv",
     ])
 
-    for p in search_paths:
+    for p in train_search_paths:
         if p.exists():
             try:
                 df = pd.read_csv(p)
@@ -155,19 +159,73 @@ def load_cohort_and_grade_mapping(
                             training_labels[stem] = int(row[grade_col])
                     break
             except Exception as exc:
-                logging.warning(f"Could not load labels from {p}: {exc}")
+                logging.warning(f"Could not load train labels from {p}: {exc}")
+
+    # Load verified test labels for the 3 supplementary test-matched images
+    test_labels: Dict[str, int] = {}
+    test_search_paths = []
+    if test_manifest_path:
+        test_search_paths.append(test_manifest_path)
+    test_search_paths.extend([
+        PROJECT_ROOT / "data" / "processed" / "idrid" / "external_test.csv",
+        PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "b. IDRiD_Disease Grading_Testing Labels.csv",
+    ])
+
+    for p in test_search_paths:
+        if p.exists():
+            try:
+                df = pd.read_csv(p)
+                img_col = next((c for c in ["image_id", "Image name", "original_id"] if c in df), None)
+                grade_col = next((c for c in ["grade", "Retinopathy grade"] if c in df), None)
+                if img_col and grade_col:
+                    for _, row in df.iterrows():
+                        if pd.notna(row[grade_col]):
+                            g_val = int(row[grade_col])
+                            stem = Path(str(row[img_col])).stem
+                            test_labels[stem] = g_val
+                            if "original_id" in row and pd.notna(row["original_id"]):
+                                test_labels[Path(str(row["original_id"])).stem] = g_val
+                    break
+            except Exception as exc:
+                logging.warning(f"Could not load test labels from {p}: {exc}")
+
+    test_aliases = {
+        "IDRiD_091": "IDRiD_478", "IDRiD_088": "IDRiD_470", "IDRiD_089": "IDRiD_471",
+        "IDRiD_478": "IDRiD_091", "IDRiD_470": "IDRiD_088", "IDRiD_471": "IDRiD_089",
+    }
 
     # Map matched target image IDs to verified grades
     all_details = data.get("all_details", {})
     for seg_filename, detail in all_details.items():
         seg_stem = Path(seg_filename).stem
-        if detail.get("matched") and detail.get("split") == "Train":
+        if detail.get("matched"):
+            split = detail.get("split")
             target_img = detail.get("target_image")
-            if target_img:
-                target_stem = Path(target_img).stem
-                if target_stem in training_labels:
-                    grade_map[seg_stem] = training_labels[target_stem]
-        elif not detail.get("matched"):
+            if not target_img:
+                raise ValueError(f"Matched segmentation image '{seg_filename}' has no target_image in match mapping.")
+            target_stem = Path(target_img).stem
+
+            if split == "Train":
+                if training_labels:
+                    if target_stem in training_labels:
+                        grade_map[seg_stem] = int(training_labels[target_stem])
+                    else:
+                        raise ValueError(
+                            f"Expected ground-truth training grade missing for matched segmentation image "
+                            f"'{seg_stem}' (target: '{target_stem}'). All 57 training-matched images must have valid grades."
+                        )
+            elif split == "Test":
+                if test_labels:
+                    if target_stem in test_labels:
+                        grade_map[seg_stem] = int(test_labels[target_stem])
+                    elif test_aliases.get(target_stem) in test_labels:
+                        grade_map[seg_stem] = int(test_labels[test_aliases[target_stem]])
+                    else:
+                        raise ValueError(
+                            f"Expected ground-truth test grade missing for supplementary segmentation image "
+                            f"'{seg_stem}' (target: '{target_stem}'). All 3 test-matched images must have valid grades."
+                        )
+        else:
             grade_map[seg_stem] = None
 
     return cohort_map, grade_map
@@ -547,14 +605,15 @@ def main() -> int:
     # Load cohort overlap and verified grade mapping
     cohort_overlap_map, seg_grade_map = load_cohort_and_grade_mapping(args.matches_json)
 
-    # Initialize model
+    # Initialize model with pretrained=False to avoid downloading ImageNet weights
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(config=config)
+    model = build_model(config=config, pretrained=False)
 
     logging.info(f"Loading checkpoint weights from {args.checkpoint}...")
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     state_dict = ckpt.get("model_state_dict", ckpt)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=True)
+    logging.info(f"Model architecture verified: loaded {len(state_dict)} tensors matching checkpoint exactly with strict=True.")
 
     # Freeze all parameters and set to eval mode
     for p in model.parameters():

@@ -72,6 +72,16 @@ def test_build_model_config_override():
     assert model.fc[1].out_features == 3
 
 
+def test_build_model_pretrained_false_overrides_config():
+    """Verify that explicitly passing pretrained=False overrides config with pretrained=True."""
+    pytest.importorskip("torch")
+
+    config = {"model": {"pretrained": True, "num_classes": 5}}
+    model = build_model(config=config, pretrained=False)
+    assert model.pretrained is False
+    assert model.num_classes == 5
+
+
 def test_get_gradcam_target_layer():
     """Verify get_gradcam_target_layer correctly extracts model.layer4."""
     pytest.importorskip("torch")

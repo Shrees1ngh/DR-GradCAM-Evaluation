@@ -78,6 +78,7 @@ from src.faithfulness import (
     evaluate_progressive_deletion,
 )
 from src.model import ICDR_GRADES, build_model
+from src.preprocessing import extract_retinal_fov_mask
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -202,11 +203,19 @@ def load_cohort_and_grade_mapping(
                 if img_col and grade_col:
                     for _, row in df.iterrows():
                         if pd.notna(row[grade_col]):
+                            g_val = int(row[grade_col])
                             stem = Path(str(row[img_col])).stem
-                            test_labels[stem] = int(row[grade_col])
+                            test_labels[stem] = g_val
+                            if "original_id" in row and pd.notna(row["original_id"]):
+                                test_labels[Path(str(row["original_id"])).stem] = g_val
                     break
             except Exception as exc:
                 logging.warning(f"Could not load test labels from {p}: {exc}")
+
+    test_aliases = {
+        "IDRiD_091": "IDRiD_478", "IDRiD_088": "IDRiD_470", "IDRiD_089": "IDRiD_471",
+        "IDRiD_478": "IDRiD_091", "IDRiD_470": "IDRiD_088", "IDRiD_471": "IDRiD_089",
+    }
 
     # Map matched target image IDs to verified grades
     all_details = data.get("all_details", {})
@@ -215,12 +224,30 @@ def load_cohort_and_grade_mapping(
         if detail.get("matched"):
             split = detail.get("split")
             target_img = detail.get("target_image")
-            if target_img:
-                target_stem = Path(target_img).stem
-                if split == "Train" and target_stem in training_labels:
-                    grade_map[seg_stem] = training_labels[target_stem]
-                elif split == "Test" and target_stem in test_labels:
-                    grade_map[seg_stem] = test_labels[target_stem]
+            if not target_img:
+                raise ValueError(f"Matched segmentation image '{seg_filename}' has no target_image in match mapping.")
+            target_stem = Path(target_img).stem
+
+            if split == "Train":
+                if training_labels:
+                    if target_stem in training_labels:
+                        grade_map[seg_stem] = int(training_labels[target_stem])
+                    else:
+                        raise ValueError(
+                            f"Expected ground-truth training grade missing for matched segmentation image "
+                            f"'{seg_stem}' (target: '{target_stem}'). All 57 training-matched images must have valid grades."
+                        )
+            elif split == "Test":
+                if test_labels:
+                    if target_stem in test_labels:
+                        grade_map[seg_stem] = int(test_labels[target_stem])
+                    elif test_aliases.get(target_stem) in test_labels:
+                        grade_map[seg_stem] = int(test_labels[test_aliases[target_stem]])
+                    else:
+                        raise ValueError(
+                            f"Expected ground-truth test grade missing for supplementary segmentation image "
+                            f"'{seg_stem}' (target: '{target_stem}'). All 3 test-matched images must have valid grades."
+                        )
         else:
             grade_map[seg_stem] = None
 
@@ -430,7 +457,7 @@ def main() -> int:
     parser.add_argument(
         "--config",
         type=Path,
-        default=PROJECT_ROOT / "configs" / "default_config.yaml",
+        default=PROJECT_ROOT / "configs" / "config.yaml",
         help="Path to YAML configuration file.",
     )
     parser.add_argument(
@@ -682,14 +709,15 @@ def main() -> int:
     # Load cohort overlap and verified grade mapping
     cohort_overlap_map, seg_grade_map = load_cohort_and_grade_mapping(args.matches_json)
 
-    # Initialize model
+    # Initialize model with pretrained=False to avoid downloading ImageNet weights
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(config=config)
+    model = build_model(config=config, pretrained=False)
 
     logging.info(f"Loading checkpoint weights from {args.checkpoint}...")
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     state_dict = ckpt.get("model_state_dict", ckpt)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=True)
+    logging.info(f"Model architecture verified: loaded {len(state_dict)} tensors matching checkpoint exactly with strict=True.")
 
     # Freeze all parameters and set to eval mode
     for p in model.parameters():
@@ -739,12 +767,32 @@ def main() -> int:
             else:
                 grade_val = seg_grade_map.get(img_stem)
 
+            # Load precomputed FOV mask from preprocessing or derive via extract_retinal_fov_mask
+            valid_fov_mask = None
+            fov_path_str = row.get("mask_fov")
+            if fov_path_str and pd.notna(fov_path_str):
+                cand_fov = PROJECT_ROOT / str(fov_path_str)
+                if cand_fov.exists():
+                    with Image.open(cand_fov) as fov_img:
+                        valid_fov_mask = (np.array(fov_img.convert("L")) > 0).astype(np.uint8)
+
+            if valid_fov_mask is None:
+                pad_offsets = None
+                if "pad_offsets" in row and pd.notna(row["pad_offsets"]):
+                    try:
+                        import ast
+                        pad_offsets = tuple(ast.literal_eval(str(row["pad_offsets"])))
+                    except Exception:
+                        pad_offsets = None
+                valid_fov_mask = extract_retinal_fov_mask(raw_rgb, pad_offsets=pad_offsets)
+
             # Run progressive ablation
             img_faith = evaluate_progressive_deletion(
                 model=model,
                 image_rgb=raw_rgb,
                 heatmap=heatmap,
                 target_class=pred_class,
+                valid_fov_mask=valid_fov_mask,
                 device=device,
                 image_id=str(row["image_id"]),
                 true_grade=grade_val,

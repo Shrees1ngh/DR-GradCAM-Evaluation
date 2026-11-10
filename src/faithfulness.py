@@ -33,6 +33,8 @@ except ImportError:
     F = None
     TORCH_AVAILABLE = False
 
+from src.preprocessing import extract_retinal_fov_mask
+
 from src.dataset import IMAGENET_MEAN, IMAGENET_STD
 from src.explainability import binarize_heatmap
 from src.model import ICDR_GRADES
@@ -304,9 +306,9 @@ def evaluate_progressive_deletion(
         "evaluations_by_fill": {},
     }
 
-    # Derive retinal FOV mask if not explicitly supplied (pixels > 10 in green channel)
+    # Derive retinal FOV mask if not explicitly supplied
     if valid_fov_mask is None:
-        valid_fov_mask = (image_rgb[:, :, 1] > 10).astype(np.uint8)
+        valid_fov_mask = extract_retinal_fov_mask(image_rgb)
 
     for fill in strategies:
         step_records = []

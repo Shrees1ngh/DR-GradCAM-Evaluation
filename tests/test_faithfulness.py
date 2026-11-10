@@ -415,3 +415,82 @@ def test_grade_unavailable_never_substituted_by_prediction():
     assert res["predicted_grade"] is not None
 
 
+def test_matched_grade_completeness_and_cohort_assignment(tmp_path: Path):
+    """Verify that all 57 train and 3 test images receive valid grades, 21 unique receive None, and missing grades raise ValueError."""
+    import json
+    import pandas as pd
+    from scripts.evaluate_faithfulness import load_cohort_and_grade_mapping
+
+    matches_file = Path("reports/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        pytest.skip("reports/idrid_seg_grading_matches.json not found")
+
+    with open(matches_file, "r", encoding="utf-8") as f:
+        matches_data = json.load(f)
+
+    # 1. Build complete mock training and testing labels CSVs
+    train_records = []
+    for filename in matches_data.get("matched_train_ids", []):
+        target = matches_data["all_details"][filename]["target_image"]
+        train_records.append({"image_id": Path(target).stem, "grade": 2})
+
+    test_records = []
+    for filename in matches_data.get("matched_test_ids", []):
+        target = matches_data["all_details"][filename]["target_image"]
+        test_records.append({"image_id": Path(target).stem, "grade": 3})
+
+    mock_train_csv = tmp_path / "mock_train.csv"
+    mock_test_csv = tmp_path / "mock_test.csv"
+    pd.DataFrame(train_records).to_csv(mock_train_csv, index=False)
+    pd.DataFrame(test_records).to_csv(mock_test_csv, index=False)
+
+    cohort_map, grade_map = load_cohort_and_grade_mapping(
+        matches_file,
+        train_manifest_path=mock_train_csv,
+        test_manifest_path=mock_test_csv,
+    )
+
+    assert len(cohort_map) == 81
+    assert len(grade_map) == 81
+
+    # Verify 57 train images have valid grades
+    train_stems = [Path(f).stem for f in matches_data["matched_train_ids"]]
+    assert len(train_stems) == 57
+    for s in train_stems:
+        assert isinstance(grade_map[s], int)
+        assert grade_map[s] == 2
+
+    # Verify 3 test images have valid grades
+    test_stems = [Path(f).stem for f in matches_data["matched_test_ids"]]
+    assert len(test_stems) == 3
+    for s in test_stems:
+        assert isinstance(grade_map[s], int)
+        assert grade_map[s] == 3
+
+    # Verify 21 unique images are strictly None
+    unique_stems = [Path(f).stem for f in matches_data["unmatched_ids"]]
+    assert len(unique_stems) == 21
+    for s in unique_stems:
+        assert grade_map[s] is None
+
+    # 2. Test missing training grade raises ValueError
+    incomplete_train_csv = tmp_path / "incomplete_train.csv"
+    pd.DataFrame(train_records[:-1]).to_csv(incomplete_train_csv, index=False)  # Drop 1 record
+    with pytest.raises(ValueError, match="Expected ground-truth training grade missing"):
+        load_cohort_and_grade_mapping(
+            matches_file,
+            train_manifest_path=incomplete_train_csv,
+            test_manifest_path=mock_test_csv,
+        )
+
+    # 3. Test missing testing grade raises ValueError
+    incomplete_test_csv = tmp_path / "incomplete_test.csv"
+    pd.DataFrame(test_records[:-1]).to_csv(incomplete_test_csv, index=False)  # Drop 1 record
+    with pytest.raises(ValueError, match="Expected ground-truth test grade missing"):
+        load_cohort_and_grade_mapping(
+            matches_file,
+            train_manifest_path=mock_train_csv,
+            test_manifest_path=incomplete_test_csv,
+        )
+
+

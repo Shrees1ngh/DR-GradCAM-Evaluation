@@ -808,11 +808,12 @@ def main() -> int:
     domain_data = analyze_image_quality_and_domain(image_paths, sample_limit=50)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(config=config)
+    model = build_model(config=config, pretrained=False)
 
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     state_dict = ckpt.get("model_state_dict", ckpt)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=True)
+    logging.info(f"Model architecture verified: loaded {len(state_dict)} tensors matching checkpoint exactly with strict=True.")
     logging.info(f"Loaded checkpoint in read-only mode from {args.checkpoint}.")
 
     # Snapshot in-memory weights to CPU and freeze all parameters

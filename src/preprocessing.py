@@ -62,6 +62,65 @@ def crop_to_retinal_fov(
     return cropped, (ymin, ymax, xmin, xmax)
 
 
+def extract_retinal_fov_mask(
+    image: np.ndarray,
+    threshold: int = 10,
+    pad_offsets: Optional[Tuple[int, int, int, int]] = None,
+) -> np.ndarray:
+    """Generate a clean binary mask (H, W) where 1 indicates valid retinal foreground.
+
+    Uses green-channel thresholding followed by morphological contour extraction and hole filling
+    to ensure:
+    1. Retinal lesions (e.g. dense haemorrhages with green intensity <= threshold) remain
+       strictly inside the valid retinal field of view (not punched out as background).
+    2. Zero-padded canvas borders (if pad_offsets provided) are strictly zeroed out.
+    3. The 4 natural black background corners outside the circular optical aperture
+       are strictly excluded.
+
+    Args:
+        image: RGB uint8 array (H, W, 3) or 2D array (H, W).
+        threshold: Green channel intensity cutoff for retinal tissue (default: 10).
+        pad_offsets: Optional tuple (pad_top, pad_bottom, pad_left, pad_right) from resize_and_pad.
+
+    Returns:
+        Binary uint8 mask of shape (H, W) with values strictly in {0, 1}.
+    """
+    if image.ndim == 3:
+        green = image[:, :, 1] if image.shape[2] >= 2 else cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    else:
+        green = image
+
+    h, w = green.shape[:2]
+    raw_mask = (green > threshold).astype(np.uint8)
+
+    if not np.any(raw_mask):
+        return np.zeros((h, w), dtype=np.uint8)
+
+    # Find the largest external contour representing the circular retinal aperture
+    contours, _ = cv2.findContours(raw_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        fov_mask = np.zeros((h, w), dtype=np.uint8)
+        # Draw and fill the largest contour to guarantee no internal holes from dark lesions
+        cv2.drawContours(fov_mask, [largest_contour], -1, 1, thickness=-1)
+    else:
+        fov_mask = raw_mask
+
+    # If pad_offsets are specified, enforce strict zero-padding on canvas margins
+    if pad_offsets is not None:
+        pad_top, pad_bottom, pad_left, pad_right = pad_offsets
+        if pad_top > 0:
+            fov_mask[:pad_top, :] = 0
+        if pad_bottom > 0:
+            fov_mask[h - pad_bottom:, :] = 0
+        if pad_left > 0:
+            fov_mask[:, :pad_left] = 0
+        if pad_right > 0:
+            fov_mask[:, w - pad_right:] = 0
+
+    return fov_mask.astype(np.uint8)
+
+
 def resize_and_pad(
     image: np.ndarray,
     target_size: Tuple[int, int] = (512, 512),

@@ -141,7 +141,7 @@ python scripts/evaluate_faithfulness.py \
 
 ### Key Guarantees & Faithfulness Metrics:
 1. **Progressive Salient Deletion:** Progressively removes top 10%, 20%, and 30% most salient retinal regions identified by Grad-CAM.
-2. **Area-Matched Random Controls:** Generates 5 independent area-matched random binary masks per step, strictly constrained within the retinal Field of View (FOV) to prevent padding bias.
+2. **Area-Matched Random Controls & Preprocessed FOV Parity:** Generates 5 independent area-matched random binary masks per step. Reuses the exact preprocessed retinal FOV mask generated during preprocessing (`mask_fov`), ensuring exact pixel-count parity ($K = \text{round}(f \times N_{\text{fov}})$) and 0.0% border bleed outside the circular retinal boundary.
 3. **Dual Fill Strategies:**
    - `black`: Canonical zero-fill baseline `(0, 0, 0)`.
    - `gaussian_blur`: Neutral blurred fill ($k=21$) to control for high-frequency edge/OOD artifacts.
@@ -152,7 +152,8 @@ python scripts/evaluate_faithfulness.py \
    - Area Under Deletion Curve (AUDC) and AUDC margin.
    - Grade-wise breakdowns across ICDR grades 0 to 4.
 6. **Immutability Guarantee:** Model weights snapshot verified 100% bit-exact identical before and after execution.
-7. **Outputs Generated:**
+7. **Zero-Download Offline Inference:** Models are constructed with `pretrained=False`, loading the saved APTOS checkpoint weights directly without downloading ImageNet weights from the network.
+8. **Outputs Generated:**
    - Detailed Markdown: `reports/phase_7_faithfulness_report.md`
    - Structured JSON: `reports/phase_7_faithfulness_report.json`
    - Predictions CSV: `reports/faithfulness_predictions.csv`
