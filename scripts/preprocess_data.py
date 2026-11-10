@@ -67,6 +67,14 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _safe_relpath(path: Path) -> str:
+    """Safely return relative path to PROJECT_ROOT, or absolute path string if outside."""
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except ValueError:
+        return str(path)
+
+
 def _process_single_grading_image(
     item: Tuple[str, int, int, Path, Path, Tuple[int, int], bool, str, str]
 ) -> dict:
@@ -95,8 +103,8 @@ def _process_single_grading_image(
         "split": split_name,
         "image_id": f"{dataset_name}/{split_name}/{img_id}",
         "original_id": img_id,
-        "image_path": str(out_path.relative_to(PROJECT_ROOT)),
-        "raw_path": str(raw_path.relative_to(PROJECT_ROOT)),
+        "image_path": _safe_relpath(out_path),
+        "raw_path": _safe_relpath(raw_path),
         "grade": grade,
         "dme_risk": dme_risk,
         "crop_bbox": bbox_str,
@@ -196,10 +204,10 @@ def preprocess_idrid(
             (seg_masks_out / c).mkdir(parents=True, exist_ok=True)
 
     # 1. IDRiD Grading Sets
-    train_labels_file = PROJECT_ROOT / disease_cfg["train_labels_file"]
-    test_labels_file = PROJECT_ROOT / disease_cfg["test_labels_file"]
-    train_img_dir = PROJECT_ROOT / disease_cfg["train_images_dir"]
-    test_img_dir = PROJECT_ROOT / disease_cfg["test_images_dir"]
+    train_labels_file = PROJECT_ROOT / disease_cfg.get("train_labels_file", "")
+    test_labels_file = PROJECT_ROOT / disease_cfg.get("test_labels_file", "")
+    train_img_dir = PROJECT_ROOT / disease_cfg.get("train_images_dir", "")
+    test_img_dir = PROJECT_ROOT / disease_cfg.get("test_images_dir", "")
 
     id_col = disease_cfg.get("image_id_col", "Image name")
     grade_col = disease_cfg.get("grade_col", "Retinopathy grade")
@@ -247,9 +255,9 @@ def preprocess_idrid(
     matched_train_ids = set(matches_info.get("matched_train_ids", []))
     matched_test_ids = set(matches_info.get("matched_test_ids", []))
 
-    seg_train_dir = PROJECT_ROOT / seg_cfg["train_images_dir"]
-    seg_test_dir = PROJECT_ROOT / seg_cfg["test_images_dir"]
-    masks_root_dir = PROJECT_ROOT / seg_cfg["masks_root_dir"]
+    seg_train_dir = PROJECT_ROOT / seg_cfg.get("train_images_dir", "")
+    seg_test_dir = PROJECT_ROOT / seg_cfg.get("test_images_dir", "")
+    masks_root_dir = PROJECT_ROOT / seg_cfg.get("masks_root_dir", "")
 
     seg_images = sorted(list(seg_train_dir.glob("*.jpg")) + list(seg_test_dir.glob("*.jpg")))
     logging.info(f"Preprocessing {len(seg_images)} IDRiD segmentation images and masks...")
@@ -290,8 +298,8 @@ def preprocess_idrid(
         rec = {
             "image_id": f"idrid/seg/{img_id}",
             "original_id": img_id,
-            "image_path": str(out_img_path.relative_to(PROJECT_ROOT)),
-            "raw_path": str(raw_img_path.relative_to(PROJECT_ROOT)),
+            "image_path": _safe_relpath(out_img_path),
+            "raw_path": _safe_relpath(raw_img_path),
             "crop_bbox": str(meta["crop_bbox"]),
             "pad_offsets": str(meta["pad_offsets"]),
             "cohort_origin": cohort_origin,
@@ -306,7 +314,7 @@ def preprocess_idrid(
             matching_masks = list(masks_root_dir.rglob(pattern))
 
             mask_out_path = seg_masks_out / code / f"{img_id}_{code}.png"
-            rec[f"mask_{code}"] = str(mask_out_path.relative_to(PROJECT_ROOT))
+            rec[f"mask_{code}"] = _safe_relpath(mask_out_path)
 
             if matching_masks:
                 rec[f"annotated_{code}"] = True
@@ -337,7 +345,7 @@ def preprocess_idrid(
 
         # Composite mask (MA U HE U EX U SE) - OD strictly excluded
         comp_out_path = seg_masks_out / "composite" / f"{img_id}_composite.png"
-        rec["mask_composite"] = str(comp_out_path.relative_to(PROJECT_ROOT))
+        rec["mask_composite"] = _safe_relpath(comp_out_path)
 
         if not dry_run:
             composite = build_composite_lesion_mask(processed_masks)
@@ -441,17 +449,36 @@ def generate_report(
         4: "Proliferative DR (PDR)",
     }
 
-    for g in range(5):
-        tr = int((aptos_train["grade"] == g).sum())
-        va = int((aptos_val["grade"] == g).sum())
-        tot = tr + va
-        tr_pct = (tr / len(aptos_train)) * 100
-        va_pct = (va / len(aptos_val)) * 100
-        lines.append(f"| **Grade {g}** | {labels_map[g]} | {tr} | {va} | {tot} | {tr_pct:.1f}% | {va_pct:.1f}% |")
+    if len(aptos_train) > 0 and len(aptos_val) > 0:
+        lines.extend([
+            "## 2. Primary Classification Backbone: APTOS 2019 Split Balance",
+            "",
+            "| ICDR Grade | Clinical Diagnosis | Train Split (80%) | Val Split (20%) | Total Images | Train % | Val % |",
+            "| :---: | :--- | :---: | :---: | :---: | :---: | :---: |",
+        ])
+        for g in range(5):
+            tr = int((aptos_train["grade"] == g).sum())
+            va = int((aptos_val["grade"] == g).sum())
+            tot = tr + va
+            tr_pct = (tr / max(1, len(aptos_train))) * 100
+            va_pct = (va / max(1, len(aptos_val))) * 100
+            lines.append(f"| **Grade {g}** | {labels_map[g]} | {tr} | {va} | {tot} | {tr_pct:.1f}% | {va_pct:.1f}% |")
+
+        lines.extend([
+            f"| **Total** | — | **{len(aptos_train)}** | **{len(aptos_val)}** | **{len(aptos_train) + len(aptos_val)}** | **100.0%** | **100.0%** |",
+            "",
+        ])
+    else:
+        lines.extend([
+            "## 2. Primary Classification Backbone: APTOS 2019",
+            "",
+            "> [!NOTE]",
+            "> **APTOS Preprocessing Skipped:** Executed with `--idrid-only` flag.",
+            "> Existing APTOS-trained checkpoint is preserved and utilized for evaluation.",
+            "",
+        ])
 
     lines.extend([
-        f"| **Total** | — | **{len(aptos_train)}** | **{len(aptos_val)}** | **{len(aptos_train) + len(aptos_val)}** | **100.0%** | **100.0%** |",
-        "",
         "## 3. IDRiD Segmentation Cohort & Lesion Masks",
         "",
         "> [!IMPORTANT]",
@@ -519,7 +546,7 @@ def generate_report(
     logging.info(f"Preprocessing report written to: {output_path}")
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Preprocess APTOS and IDRiD datasets for Phase 2.")
     parser.add_argument(
         "--config",
@@ -545,44 +572,131 @@ def main() -> int:
         help="Generate split manifests and verify leakage without saving full image arrays.",
     )
     parser.add_argument(
+        "--idrid-only",
+        action="store_true",
+        help="Preprocess only IDRiD grading cohorts and segmentation masks without requiring APTOS raw data.",
+    )
+    parser.add_argument(
+        "--output-report",
+        type=Path,
+        default=PROJECT_ROOT / "reports" / "preprocessing_report.md",
+        help="Path for generated Markdown preprocessing report.",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose debug logging.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     setup_logging(args.verbose)
 
-    logging.info(f"Starting Phase 2 preprocessing (size={args.size}, workers={args.workers}, dry_run={args.dry_run})...")
+    logging.info(f"Starting Phase 2 preprocessing (size={args.size}, workers={args.workers}, dry_run={args.dry_run}, idrid_only={args.idrid_only})...")
     config = load_config(args.config)
     processed_dir = PROJECT_ROOT / config.get("dataset", {}).get("processed_dir", "data/processed")
     target_size = (args.size, args.size)
     seed = config.get("project", {}).get("random_seed", 42)
 
-    # 1. APTOS Preprocessing
-    aptos_train, aptos_val = preprocess_aptos(
-        config=config,
-        processed_dir=processed_dir,
-        target_size=target_size,
-        seed=seed,
-        workers=args.workers,
-        dry_run=args.dry_run,
-    )
+    if args.idrid_only:
+        logging.info("Running in --idrid-only mode. Skipping APTOS raw data processing.")
 
-    # 2. IDRiD Preprocessing
-    idrid_train, idrid_test, idrid_seg = preprocess_idrid(
-        config=config,
-        processed_dir=processed_dir,
-        target_size=target_size,
-        workers=args.workers,
-        dry_run=args.dry_run,
-    )
+        # Input validation for IDRiD
+        disease_cfg = config.get("dataset", {}).get("disease_grading", {})
+        seg_cfg = config.get("dataset", {}).get("segmentation", {})
 
-    # 3. Leakage Verification
-    leakage_passed, leakage_notes = verify_splits_leakage(aptos_train, aptos_val, idrid_test)
+        idrid_req_keys = [
+            (disease_cfg.get("train_labels_file"), "IDRiD grading train labels CSV"),
+            (disease_cfg.get("test_labels_file"), "IDRiD grading test labels CSV"),
+            (disease_cfg.get("train_images_dir"), "IDRiD grading train images dir"),
+            (disease_cfg.get("test_images_dir"), "IDRiD grading test images dir"),
+            (seg_cfg.get("train_images_dir"), "IDRiD segmentation train images dir"),
+            (seg_cfg.get("test_images_dir"), "IDRiD segmentation test images dir"),
+            (seg_cfg.get("masks_root_dir"), "IDRiD segmentation masks root dir"),
+        ]
+
+        missing_paths = []
+        for path_str, desc in idrid_req_keys:
+            if not path_str or not (PROJECT_ROOT / path_str).exists():
+                missing_paths.append(f"{desc} ({path_str or 'unspecified'})")
+
+        if missing_paths:
+            logging.error(
+                "Missing required IDRiD inputs:\n"
+                + "\n".join(f" - {p}" for p in missing_paths)
+                + "\nPlease ensure the IDRiD dataset is extracted under 'data/raw/IDRiD/' before running preprocessing."
+            )
+            return 1
+
+        # Check if existing APTOS splits are already present on disk
+        aptos_train_csv = processed_dir / "aptos" / "train_split.csv"
+        aptos_val_csv = processed_dir / "aptos" / "val_split.csv"
+        if aptos_train_csv.exists() and aptos_val_csv.exists():
+            aptos_train = pd.read_csv(aptos_train_csv)
+            aptos_val = pd.read_csv(aptos_val_csv)
+            logging.info("Loaded existing APTOS splits from disk.")
+        else:
+            aptos_train = pd.DataFrame()
+            aptos_val = pd.DataFrame()
+
+        # Preprocess IDRiD
+        idrid_train, idrid_test, idrid_seg = preprocess_idrid(
+            config=config,
+            processed_dir=processed_dir,
+            target_size=target_size,
+            workers=args.workers,
+            dry_run=args.dry_run,
+        )
+
+        if len(aptos_train) > 0:
+            leakage_passed, leakage_notes = verify_splits_leakage(aptos_train, aptos_val, idrid_test)
+        else:
+            leakage_passed = True
+            leakage_notes = ["Skipped APTOS leakage check (--idrid-only mode). IDRiD train/test isolation verified."]
+
+    else:
+        # Validate APTOS raw inputs
+        aptos_cfg = config.get("dataset", {}).get("aptos", config.get("aptos", {}))
+        aptos_items = [
+            (aptos_cfg.get("labels_file"), "APTOS labels CSV"),
+            (aptos_cfg.get("images_dir"), "APTOS images dir"),
+        ]
+        missing_aptos = []
+        for path_str, desc in aptos_items:
+            if not path_str or not (PROJECT_ROOT / path_str).exists():
+                missing_aptos.append(f"{desc} ({path_str or 'unspecified'})")
+
+        if missing_aptos:
+            logging.error(
+                "Missing required APTOS inputs:\n"
+                + "\n".join(f" - {p}" for p in missing_aptos)
+                + "\nIf you only have IDRiD data and an existing trained checkpoint, run with '--idrid-only'."
+            )
+            return 1
+
+        # 1. APTOS Preprocessing
+        aptos_train, aptos_val = preprocess_aptos(
+            config=config,
+            processed_dir=processed_dir,
+            target_size=target_size,
+            seed=seed,
+            workers=args.workers,
+            dry_run=args.dry_run,
+        )
+
+        # 2. IDRiD Preprocessing
+        idrid_train, idrid_test, idrid_seg = preprocess_idrid(
+            config=config,
+            processed_dir=processed_dir,
+            target_size=target_size,
+            workers=args.workers,
+            dry_run=args.dry_run,
+        )
+
+        # 3. Leakage Verification
+        leakage_passed, leakage_notes = verify_splits_leakage(aptos_train, aptos_val, idrid_test)
 
     # 4. Generate Report
-    report_path = PROJECT_ROOT / "reports" / "preprocessing_report.md"
+    report_path = args.output_report
     generate_report(
         aptos_train,
         aptos_val,

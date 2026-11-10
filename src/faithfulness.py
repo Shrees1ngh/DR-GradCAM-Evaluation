@@ -99,6 +99,62 @@ def apply_ablation_mask(
     return ablated
 
 
+def generate_fov_restricted_salient_mask(
+    heatmap: np.ndarray,
+    valid_fov_mask: np.ndarray,
+    fraction: float,
+) -> Tuple[np.ndarray, int]:
+    """Generate a salient ablation mask strictly restricted to the valid retinal FOV.
+
+    Extracts the top `fraction` of hottest Grad-CAM activations computed relative
+    to the valid retinal surface area (excluding empty padding/background).
+
+    Guarantees:
+    1. Exactly round(fraction * N_fov) pixels are selected.
+    2. Zero pixels outside the valid retinal FOV are selected.
+
+    Args:
+        heatmap: 2D array of continuous Grad-CAM activations (H, W).
+        valid_fov_mask: 2D binary mask (H, W) where 1 indicates valid retinal tissue.
+        fraction: Top fraction to select relative to retinal FOV (e.g. 0.10 for top 10%).
+
+    Returns:
+        salient_mask: Binary mask array of shape (H, W) and dtype uint8.
+        pixel_count: Exact number of activated pixels.
+    """
+    h, w = heatmap.shape[:2]
+    if valid_fov_mask.shape != (h, w):
+        raise ValueError(
+            f"valid_fov_mask shape {valid_fov_mask.shape} does not match heatmap {(h, w)}"
+        )
+
+    fov_indices = np.flatnonzero(valid_fov_mask > 0)
+    total_fov_pixels = len(fov_indices)
+
+    if total_fov_pixels == 0 or fraction <= 0.0:
+        return np.zeros((h, w), dtype=np.uint8), 0
+
+    target_pixel_count = int(round(fraction * total_fov_pixels))
+    target_pixel_count = max(1, min(target_pixel_count, total_fov_pixels))
+
+    # Extract activation values strictly inside the valid retinal FOV
+    fov_values = heatmap.flat[fov_indices]
+
+    # Find the top `target_pixel_count` highest values within the FOV
+    partition_idx = len(fov_values) - target_pixel_count
+    top_local_indices = np.argpartition(fov_values, partition_idx)[partition_idx:]
+
+    # Map back to global flattened indices
+    top_global_indices = fov_indices[top_local_indices]
+
+    mask_flat = np.zeros(h * w, dtype=np.uint8)
+    mask_flat[top_global_indices] = 1
+    salient_mask = mask_flat.reshape((h, w))
+
+    actual_count = int(np.sum(salient_mask))
+    return salient_mask, actual_count
+
+
 def generate_random_ablation_mask(
     target_pixel_count: int,
     shape: Tuple[int, int],
@@ -258,9 +314,12 @@ def evaluate_progressive_deletion(
         random_drops = []
 
         for step in steps:
-            # Saliency ablation mask: Top step fraction of hottest activations
-            salient_mask = binarize_heatmap(heatmap, threshold=step, method="percentile")
-            pixel_count = int(np.sum(salient_mask))
+            # Saliency ablation mask: Top step fraction of hottest activations strictly within valid retinal FOV
+            salient_mask, pixel_count = generate_fov_restricted_salient_mask(
+                heatmap=heatmap,
+                valid_fov_mask=valid_fov_mask,
+                fraction=step,
+            )
 
             # Run salient ablation pass
             salient_prob, _ = run_single_deletion_step(

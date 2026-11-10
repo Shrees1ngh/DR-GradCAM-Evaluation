@@ -15,6 +15,7 @@ from src.faithfulness import (
     aggregate_faithfulness_scores,
     apply_ablation_mask,
     evaluate_progressive_deletion,
+    generate_fov_restricted_salient_mask,
     generate_random_ablation_mask,
     run_single_deletion_step,
 )
@@ -306,4 +307,111 @@ def test_state_dict_immutability_guarantee():
         model.fc.weight[0, 0] += 1.0
 
     assert verify_state_dict_unchanged(initial_state, model) is False
+
+
+def test_fov_restricted_salient_and_random_mask_exact_parity():
+    """Verify salient and random ablation masks have exact pixel parity and zero border bleed.
+    
+    Guarantees:
+    1. Both masks have the exact same number of deleted pixels.
+    2. Both masks contain zero activations outside the valid retinal FOV.
+    3. Target count is defined relative to valid retinal surface area (not total canvas).
+    """
+    h, w = 200, 200
+    # Create circular retinal FOV
+    y, x = np.ogrid[:h, :w]
+    center_y, center_x = 100, 100
+    radius = 80
+    valid_fov = ((y - center_y)**2 + (x - center_x)**2 <= radius**2).astype(np.uint8)
+    n_fov_pixels = int(np.sum(valid_fov))
+    assert n_fov_pixels > 0
+
+    # Create synthetic Grad-CAM heatmap with values both inside and outside the FOV
+    heatmap = np.random.rand(h, w).astype(np.float32)
+
+    rng = np.random.default_rng(999)
+
+    for step in [0.10, 0.20, 0.30]:
+        salient_mask, pixel_count = generate_fov_restricted_salient_mask(
+            heatmap=heatmap,
+            valid_fov_mask=valid_fov,
+            fraction=step,
+        )
+
+        rand_mask = generate_random_ablation_mask(
+            target_pixel_count=pixel_count,
+            shape=(h, w),
+            valid_fov_mask=valid_fov,
+            rng=rng,
+        )
+
+        expected_count = int(round(step * n_fov_pixels))
+
+        # 1. Exact count parity
+        assert pixel_count == expected_count
+        assert np.sum(salient_mask) == expected_count
+        assert np.sum(rand_mask) == expected_count
+        assert np.sum(salient_mask) == np.sum(rand_mask)
+
+        # 2. Zero border bleed: all 1s must reside strictly inside valid_fov
+        assert np.all(valid_fov[salient_mask > 0] == 1)
+        assert np.all(valid_fov[rand_mask > 0] == 1)
+
+        # 3. Canvas background outside FOV must be completely zero
+        outside_fov = (valid_fov == 0)
+        assert np.all(salient_mask[outside_fov] == 0)
+        assert np.all(rand_mask[outside_fov] == 0)
+
+
+def test_load_cohort_and_grade_mapping_idrid_matches():
+    """Verify load_cohort_and_grade_mapping correctly categorizes 57 train, 3 test, 21 unique."""
+    from scripts.evaluate_faithfulness import load_cohort_and_grade_mapping
+    from pathlib import Path
+
+    matches_file = Path("reports/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        pytest.skip("reports/idrid_seg_grading_matches.json not found")
+
+    cohort_map, grade_map = load_cohort_and_grade_mapping(matches_file)
+
+    train_cohort = [k for k, v in cohort_map.items() if v == "idrid_grading_train_cohort"]
+    test_cohort = [k for k, v in cohort_map.items() if v == "idrid_grading_test_cohort"]
+    unique_cohort = [k for k, v in cohort_map.items() if v == "idrid_seg_unique"]
+
+    assert len(train_cohort) == 57
+    assert len(test_cohort) == 3
+    assert len(unique_cohort) == 21
+    assert len(cohort_map) == 81
+
+    # The 21 unique images must strictly have grade None (unavailable, never invented)
+    for k in unique_cohort:
+        assert grade_map[k] is None
+
+
+def test_grade_unavailable_never_substituted_by_prediction():
+    """Verify that when ground truth is unavailable, true_grade remains None and is never set to predicted_grade."""
+    model = DummyModel()
+    device = torch.device("cpu")
+    img = np.ones((64, 64, 3), dtype=np.uint8) * 128
+    heatmap = np.zeros((64, 64), dtype=np.float32)
+    heatmap[20:40, 20:40] = 1.0
+
+    # Pass true_grade=None
+    res = evaluate_progressive_deletion(
+        model=model,
+        image_rgb=img,
+        heatmap=heatmap,
+        target_class=1,
+        device=device,
+        image_id="unique_01",
+        true_grade=None,  # Unavailable!
+        deletion_steps=[0.10],
+        fill_strategies=["black"],
+        num_random_trials=2,
+    )
+
+    # true_grade must remain None, NOT predicted_grade
+    assert res["true_grade"] is None
+    assert res["predicted_grade"] is not None
+
 

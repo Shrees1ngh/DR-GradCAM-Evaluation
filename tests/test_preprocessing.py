@@ -206,3 +206,121 @@ def test_segmentation_lesion_dataset(tmp_path: Path):
     # SE is zero mask because missing
     assert torch.sum(sample["masks"]["SE"]).item() == 0
 
+
+def test_preprocess_cli_missing_inputs_validation(tmp_path: Path):
+    """Verify preprocess CLI returns error 1 when inputs are missing."""
+    import yaml
+    from scripts.preprocess_data import main as preprocess_main
+
+    empty_config = tmp_path / "empty_config.yaml"
+    with open(empty_config, "w", encoding="utf-8") as f:
+        yaml.dump({"dataset": {}}, f)
+
+    # Missing IDRiD inputs with --idrid-only
+    ret_idrid = preprocess_main(["--config", str(empty_config), "--idrid-only"])
+    assert ret_idrid == 1
+
+    # Missing APTOS inputs without --idrid-only
+    ret_aptos = preprocess_main(["--config", str(empty_config)])
+    assert ret_aptos == 1
+
+
+def test_preprocess_cli_idrid_only_execution(tmp_path: Path):
+    """Verify --idrid-only flag executes and prepares IDRiD cohorts without APTOS raw data."""
+    import yaml
+    from scripts.preprocess_data import main as preprocess_main
+
+    # Build mock IDRiD raw directory structure
+    raw_dir = tmp_path / "raw_idrid"
+    grading_train_dir = raw_dir / "grading" / "train"
+    grading_test_dir = raw_dir / "grading" / "test"
+    grading_train_dir.mkdir(parents=True, exist_ok=True)
+    grading_test_dir.mkdir(parents=True, exist_ok=True)
+
+    # Dummy images
+    dummy_img = Image.fromarray(np.ones((200, 200, 3), dtype=np.uint8) * 128)
+    dummy_img.save(grading_train_dir / "IDRiD_001.jpg")
+    dummy_img.save(grading_test_dir / "IDRiD_103.jpg")
+
+    # Labels CSVs
+    labels_dir = raw_dir / "grading" / "groundtruth"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    train_labels = labels_dir / "train_labels.csv"
+    test_labels = labels_dir / "test_labels.csv"
+    pd.DataFrame({
+        "Image name": ["IDRiD_001"],
+        "Retinopathy grade": [2],
+        "Risk of macular edema ": [0],
+    }).to_csv(train_labels, index=False)
+    pd.DataFrame({
+        "Image name": ["IDRiD_103"],
+        "Retinopathy grade": [3],
+        "Risk of macular edema ": [1],
+    }).to_csv(test_labels, index=False)
+
+    # Segmentation directory
+    seg_train_dir = raw_dir / "seg" / "train"
+    seg_test_dir = raw_dir / "seg" / "test"
+    seg_train_dir.mkdir(parents=True, exist_ok=True)
+    seg_test_dir.mkdir(parents=True, exist_ok=True)
+    dummy_img.save(seg_train_dir / "IDRiD_01.jpg")
+
+    masks_root = raw_dir / "seg" / "masks"
+    masks_root.mkdir(parents=True, exist_ok=True)
+    for c in ["1. Microaneurysms", "2. Haemorrhages", "3. Hard Exudates", "4. Soft Exudates", "5. Optic Disc"]:
+        (masks_root / c).mkdir(parents=True, exist_ok=True)
+    dummy_mask = Image.fromarray(np.ones((200, 200), dtype=np.uint8) * 255)
+    dummy_mask.save(masks_root / "1. Microaneurysms" / "IDRiD_01_MA.tif")
+
+    processed_dir = tmp_path / "processed"
+    cfg = {
+        "project": {"random_seed": 42},
+        "dataset": {
+            "processed_dir": str(processed_dir),
+            "disease_grading": {
+                "train_images_dir": str(grading_train_dir),
+                "test_images_dir": str(grading_test_dir),
+                "train_labels_file": str(train_labels),
+                "test_labels_file": str(test_labels),
+                "image_id_col": "Image name",
+                "grade_col": "Retinopathy grade",
+                "dme_col": "Risk of macular edema ",
+            },
+            "segmentation": {
+                "train_images_dir": str(seg_train_dir),
+                "test_images_dir": str(seg_test_dir),
+                "masks_root_dir": str(masks_root),
+                "lesion_types": {
+                    "microaneurysms": {"code": "MA", "subdir": "1. Microaneurysms"},
+                    "haemorrhages": {"code": "HE", "subdir": "2. Haemorrhages"},
+                    "hard_exudates": {"code": "EX", "subdir": "3. Hard Exudates"},
+                    "soft_exudates": {"code": "SE", "subdir": "4. Soft Exudates"},
+                    "optic_disc": {"code": "OD", "subdir": "5. Optic Disc"},
+                },
+            },
+            "aptos": {
+                "raw_dir": "nonexistent_aptos",
+                "labels_file": "nonexistent_aptos/train.csv",
+                "images_dir": "nonexistent_aptos/train_images",
+            },
+        },
+    }
+
+    cfg_file = tmp_path / "config.yaml"
+    with open(cfg_file, "w", encoding="utf-8") as f:
+        yaml.dump(cfg, f)
+
+    mock_report = tmp_path / "mock_report.md"
+    ret = preprocess_main([
+        "--config", str(cfg_file),
+        "--idrid-only",
+        "--dry-run",
+        "--output-report", str(mock_report),
+    ])
+    assert ret == 0
+    assert mock_report.exists()
+
+    assert (processed_dir / "idrid" / "external_train.csv").exists()
+    assert (processed_dir / "idrid" / "external_test.csv").exists()
+    assert (processed_dir / "idrid" / "segmentation_manifest.csv").exists()
+

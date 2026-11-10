@@ -32,11 +32,14 @@ Before executing genuine inference, ensure that:
 
 ## 2. Step 1: Preprocess Data & Generate Split Manifests
 
-If `data/processed/` has not yet been populated, run the deterministic preprocessor:
+If `data/processed/` has not yet been populated, run the deterministic preprocessor using the `--idrid-only` flag (recommended for Colab and inference environments where IDRiD images and the pre-trained APTOS checkpoint are provided):
 
 ```bash
-python scripts/preprocess_data.py --size 512
+python scripts/preprocess_data.py --size 512 --idrid-only
 ```
+
+> [!NOTE]
+> The `--idrid-only` flag allows IDRiD grading cohorts (413 train, 103 test) and segmentation masks (81 images across 5 lesion types) to be fully preprocessed and aligned without requiring raw APTOS 2019 data. The existing APTOS-trained checkpoint (`best_model_qwk.pth`) remains frozen and untouched.
 
 ### Preprocessing Geometry Guarantees:
 - **FOV Cropping:** `crop_to_retinal_fov` detects circular retinal boundaries in the green channel and excises empty horizontal sensor margins ($1500+$ px on IDRiD's $4288 \times 2848$ frames).
@@ -206,7 +209,7 @@ if os.path.exists(DRIVE_IDRID_ZIP):
 
 ### Cell 4: Preprocess IDRiD Images & Generate Aligned Manifests
 ```python
-!python scripts/preprocess_data.py --size 512
+!python scripts/preprocess_data.py --size 512 --idrid-only
 ```
 
 ### Cell 5: Run Genuine Domain Shift Diagnostic (N=413 IDRiD Train Images)

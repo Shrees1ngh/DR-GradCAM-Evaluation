@@ -127,23 +127,110 @@ def verify_state_dict_unchanged(
     return True
 
 
+def load_cohort_and_grade_mapping(
+    matches_json_path: Path,
+    train_manifest_path: Optional[Path] = None,
+    test_manifest_path: Optional[Path] = None,
+) -> Tuple[Dict[str, str], Dict[str, Optional[int]]]:
+    """Load pre-computed cross-match data and verified disease grades for IDRiD segmentation images.
+
+    Returns:
+        cohort_map: Mapping from segmentation image stem (e.g. 'IDRiD_01') to cohort origin string.
+        grade_map: Mapping from segmentation image stem to verified ground-truth grade:
+            - 57 matched training images: verified grade from IDRiD training labels.
+            - 3 supplementary test images: verified grade from IDRiD test labels.
+            - 21 unique images: None (strictly marked as unavailable; never invented/substituted).
+    """
+    cohort_map: Dict[str, str] = {}
+    grade_map: Dict[str, Optional[int]] = {}
+
+    if not matches_json_path.exists():
+        return cohort_map, grade_map
+
+    with open(matches_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    for seg_id in data.get("matched_train_ids", []):
+        cohort_map[Path(seg_id).stem] = "idrid_grading_train_cohort"
+    for seg_id in data.get("matched_test_ids", []):
+        cohort_map[Path(seg_id).stem] = "idrid_grading_test_cohort"
+    for seg_id in data.get("unmatched_ids", []):
+        cohort_map[Path(seg_id).stem] = "idrid_seg_unique"
+        grade_map[Path(seg_id).stem] = None
+
+    # Load verified training labels for the 57 matched training images
+    training_labels: Dict[str, int] = {}
+    train_search_paths = []
+    if train_manifest_path:
+        train_search_paths.append(train_manifest_path)
+    train_search_paths.extend([
+        PROJECT_ROOT / "data" / "processed" / "idrid" / "external_train.csv",
+        PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "a. IDRiD_Disease Grading_Training Labels.csv",
+    ])
+
+    for p in train_search_paths:
+        if p.exists():
+            try:
+                df = pd.read_csv(p)
+                img_col = next((c for c in ["image_id", "Image name", "original_id"] if c in df), None)
+                grade_col = next((c for c in ["grade", "Retinopathy grade"] if c in df), None)
+                if img_col and grade_col:
+                    for _, row in df.iterrows():
+                        if pd.notna(row[grade_col]):
+                            stem = Path(str(row[img_col])).stem
+                            training_labels[stem] = int(row[grade_col])
+                    break
+            except Exception as exc:
+                logging.warning(f"Could not load train labels from {p}: {exc}")
+
+    # Load verified test labels for the 3 supplementary test-matched images
+    test_labels: Dict[str, int] = {}
+    test_search_paths = []
+    if test_manifest_path:
+        test_search_paths.append(test_manifest_path)
+    test_search_paths.extend([
+        PROJECT_ROOT / "data" / "processed" / "idrid" / "external_test.csv",
+        PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "b. IDRiD_Disease Grading_Testing Labels.csv",
+    ])
+
+    for p in test_search_paths:
+        if p.exists():
+            try:
+                df = pd.read_csv(p)
+                img_col = next((c for c in ["image_id", "Image name", "original_id"] if c in df), None)
+                grade_col = next((c for c in ["grade", "Retinopathy grade"] if c in df), None)
+                if img_col and grade_col:
+                    for _, row in df.iterrows():
+                        if pd.notna(row[grade_col]):
+                            stem = Path(str(row[img_col])).stem
+                            test_labels[stem] = int(row[grade_col])
+                    break
+            except Exception as exc:
+                logging.warning(f"Could not load test labels from {p}: {exc}")
+
+    # Map matched target image IDs to verified grades
+    all_details = data.get("all_details", {})
+    for seg_filename, detail in all_details.items():
+        seg_stem = Path(seg_filename).stem
+        if detail.get("matched"):
+            split = detail.get("split")
+            target_img = detail.get("target_image")
+            if target_img:
+                target_stem = Path(target_img).stem
+                if split == "Train" and target_stem in training_labels:
+                    grade_map[seg_stem] = training_labels[target_stem]
+                elif split == "Test" and target_stem in test_labels:
+                    grade_map[seg_stem] = test_labels[target_stem]
+        else:
+            grade_map[seg_stem] = None
+
+    return cohort_map, grade_map
+
+
 def load_cohort_overlap_mapping(matches_json_path: Path) -> Dict[str, str]:
     """Load the mapping of segmentation image stems to their grading cohort origin."""
-    if not matches_json_path.exists():
-        return {}
-    try:
-        with open(matches_json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        mapping = {}
-        for m in data.get("matches", []):
-            seg_id = m.get("seg_id")
-            cohort = m.get("grading_cohort")
-            if seg_id and cohort:
-                mapping[seg_id] = cohort
-        return mapping
-    except Exception as exc:
-        logging.warning(f"Could not load cohort overlap mapping: {exc}")
-        return {}
+    cohort_map, _ = load_cohort_and_grade_mapping(matches_json_path)
+    return cohort_map
 
 
 def partition_results_by_cohort(
@@ -223,9 +310,9 @@ def generate_markdown_report(
     md.append(f"- **Mean Random Control AUDC**: `{p_audc_random:.4f}` (average probability drop when removing area-matched random retinal patches).")
     md.append(f"- **Net Faithfulness Margin (Primary Cohort)**: `+{p_audc_margin:.4f}`")
     if p_audc_margin > 0.0:
-        md.append("  - **Interpretation**: Deleting Grad-CAM highlighted features causes a systematically larger drop in model diagnostic confidence than deleting arbitrary retinal tissue of identical surface area. This proves that Grad-CAM identifies causally relevant decision features rather than acting as a superficial edge detector.")
+        md.append("  - **Scientific Interpretation**: A systematically larger confidence drop under salient deletion than area-matched random deletion provides evidence of greater model sensitivity to the highlighted regions under the tested perturbation protocol. It indicates visual fidelity with respect to model confidence drops, though it does not establish definitive causality.")
     else:
-        md.append("  - **Interpretation**: The model did not exhibit a positive net margin over random deletion, suggesting potential spurious feature reliance.")
+        md.append("  - **Scientific Interpretation**: The model did not exhibit a positive net margin over random deletion, suggesting that under this perturbation protocol the model is not disproportionately sensitive to the highlighted regions relative to random tissue of equal area.")
     md.append("")
 
     md.append("## 2. Cohort Separation & Dataset Isolation Protocol\n")
@@ -312,7 +399,7 @@ def generate_markdown_report(
     md.append("$$\\mathcal{M}^{(k)} = \\Delta p_{\\text{salient}}^{(k)} - \\Delta p_{\\text{random}}^{(k)}$$")
     md.append("And the Area Under the Deletion Curve (AUDC) is computed across the deletion progression $\\{10\\%, 20\\%, 30\\%\\}$:")
     md.append("$$\\text{AUDC} = \\frac{1}{K} \\sum_{k=1}^K \\Delta p^{(k)}$$")
-    md.append("A positive AUDC margin ($\\text{AUDC}_{\\text{salient}} - \\text{AUDC}_{\\text{random}} > 0$) constitutes mathematical proof of decision fidelity.\n")
+    md.append("A positive AUDC margin ($\\text{AUDC}_{\\text{salient}} - \\text{AUDC}_{\\text{random}} > 0$) provides empirical evidence of greater model sensitivity to the highlighted regions under the deletion protocol rather than establishing definitive causality.\n")
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
@@ -337,7 +424,7 @@ def main() -> int:
     parser.add_argument(
         "--matches-json",
         type=Path,
-        default=PROJECT_ROOT / "data" / "processed" / "idrid" / "segmentation_grading_matches.json",
+        default=PROJECT_ROOT / "reports" / "idrid_seg_grading_matches.json",
         help="Path to JSON file mapping segmentation images to grading cohorts.",
     )
     parser.add_argument(
@@ -592,8 +679,8 @@ def main() -> int:
     sha256_before = compute_file_sha256(args.checkpoint)
     logging.info(f"Checkpoint SHA-256 before inference: {sha256_before}")
 
-    # Load cohort overlap mapping
-    cohort_overlap_map = load_cohort_overlap_mapping(args.matches_json)
+    # Load cohort overlap and verified grade mapping
+    cohort_overlap_map, seg_grade_map = load_cohort_and_grade_mapping(args.matches_json)
 
     # Initialize model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -637,6 +724,21 @@ def main() -> int:
             img_stem = Path(str(row["image_id"])).stem
             cohort_origin = str(row.get("cohort_origin", cohort_overlap_map.get(img_stem, "idrid_seg_unique")))
 
+            # Assign verified ground-truth grade:
+            # - Unique segmentation images MUST have true_grade=None (unavailable)
+            # - Train-matched images get their verified grade from seg_grade_map or manifest
+            # - Supplementary test-matched images get their test grade
+            # NEVER substitute predicted class for unavailable ground-truth grade!
+            if cohort_origin == "idrid_seg_unique":
+                grade_val = None
+            elif "grade" in row and pd.notna(row["grade"]) and str(row["grade"]).strip() != "":
+                try:
+                    grade_val = int(row["grade"])
+                except (ValueError, TypeError):
+                    grade_val = seg_grade_map.get(img_stem)
+            else:
+                grade_val = seg_grade_map.get(img_stem)
+
             # Run progressive ablation
             img_faith = evaluate_progressive_deletion(
                 model=model,
@@ -645,7 +747,7 @@ def main() -> int:
                 target_class=pred_class,
                 device=device,
                 image_id=str(row["image_id"]),
-                true_grade=int(row.get("grade", pred_class)),
+                true_grade=grade_val,
                 deletion_steps=steps,
                 fill_strategies=fill_strategies,
                 num_random_trials=args.num_random_trials,
