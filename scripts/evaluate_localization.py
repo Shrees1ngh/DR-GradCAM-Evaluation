@@ -105,22 +105,78 @@ def verify_state_dict_unchanged(
     return True
 
 
-def load_cohort_overlap_mapping(matches_json_path: Path) -> Dict[str, str]:
-    """Load pre-computed pixel-exact cross-match data for IDRiD segmentation images."""
+def load_cohort_and_grade_mapping(
+    matches_json_path: Path,
+    train_manifest_path: Optional[Path] = None,
+) -> Tuple[Dict[str, str], Dict[str, Optional[int]]]:
+    """Load pre-computed cross-match data and verified disease grades for IDRiD segmentation images.
+
+    Returns:
+        cohort_map: Mapping from segmentation image stem (e.g. 'IDRiD_01') to cohort origin string.
+        grade_map: Mapping from segmentation image stem to verified ground-truth grade (or None if unavailable).
+    """
+    cohort_map: Dict[str, str] = {}
+    grade_map: Dict[str, Optional[int]] = {}
+
     if not matches_json_path.exists():
-        return {}
+        return cohort_map, grade_map
+
     with open(matches_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    mapping = {}
     for seg_id in data.get("matched_train_ids", []):
-        mapping[Path(seg_id).stem] = "idrid_grading_train_cohort"
+        cohort_map[Path(seg_id).stem] = "idrid_grading_train_cohort"
     for seg_id in data.get("matched_test_ids", []):
-        mapping[Path(seg_id).stem] = "idrid_grading_test_cohort"
+        cohort_map[Path(seg_id).stem] = "idrid_grading_test_cohort"
     for seg_id in data.get("unmatched_ids", []):
-        mapping[Path(seg_id).stem] = "idrid_seg_unique"
+        cohort_map[Path(seg_id).stem] = "idrid_seg_unique"
+        grade_map[Path(seg_id).stem] = None
 
-    return mapping
+    # Load verified training labels for the 57 matched training images
+    training_labels: Dict[str, int] = {}
+    search_paths = []
+    if train_manifest_path:
+        search_paths.append(train_manifest_path)
+    search_paths.extend([
+        PROJECT_ROOT / "data" / "processed" / "idrid" / "external_train.csv",
+        PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "a. IDRiD_Disease Grading_Training Labels.csv",
+    ])
+
+    for p in search_paths:
+        if p.exists():
+            try:
+                df = pd.read_csv(p)
+                img_col = next((c for c in ["image_id", "Image name", "original_id"] if c in df), None)
+                grade_col = next((c for c in ["grade", "Retinopathy grade"] if c in df), None)
+                if img_col and grade_col:
+                    for _, row in df.iterrows():
+                        if pd.notna(row[grade_col]):
+                            stem = Path(str(row[img_col])).stem
+                            training_labels[stem] = int(row[grade_col])
+                    break
+            except Exception as exc:
+                logging.warning(f"Could not load labels from {p}: {exc}")
+
+    # Map matched target image IDs to verified grades
+    all_details = data.get("all_details", {})
+    for seg_filename, detail in all_details.items():
+        seg_stem = Path(seg_filename).stem
+        if detail.get("matched") and detail.get("split") == "Train":
+            target_img = detail.get("target_image")
+            if target_img:
+                target_stem = Path(target_img).stem
+                if target_stem in training_labels:
+                    grade_map[seg_stem] = training_labels[target_stem]
+        elif not detail.get("matched"):
+            grade_map[seg_stem] = None
+
+    return cohort_map, grade_map
+
+
+def load_cohort_overlap_mapping(matches_json_path: Path) -> Dict[str, str]:
+    """Load pre-computed pixel-exact cross-match data for IDRiD segmentation images."""
+    cohort_map, _ = load_cohort_and_grade_mapping(matches_json_path)
+    return cohort_map
 
 
 def generate_markdown_report(
@@ -238,11 +294,13 @@ Grade 0 healthy eyes contain zero lesions and are strictly excluded from lesion 
 """
     grade_names = {1: "Mild NPDR", 2: "Moderate NPDR", 3: "Severe NPDR", 4: "Proliferative DR (PDR)"}
     p_gw = primary.get("grade_wise", {})
+    verified_cnt = 0
     for g in range(1, 5):
         g_data = p_gw.get(f"grade_{g}", {})
         iou_s = g_data.get("iou", {})
         dice_s = g_data.get("dice", {})
         cnt = iou_s.get("count", 0)
+        verified_cnt += cnt
         mean_i = f"{iou_s['mean']:.4f}" if iou_s.get("mean") is not None else "N/A"
         med_i = f"{iou_s['median']:.4f}" if iou_s.get("median") is not None else "N/A"
         mean_d = f"{dice_s['mean']:.4f}" if dice_s.get("mean") is not None else "N/A"
@@ -250,7 +308,12 @@ Grade 0 healthy eyes contain zero lesions and are strictly excluded from lesion 
 
         md += f"| **Grade {g}** | {grade_names[g]} | {cnt} | {mean_i} | {med_i} | {mean_d} | {med_d} |\n"
 
+    unavail_cnt = summary.get("grade_distribution", {}).get("unavailable", 0)
     md += f"""| **Grade 0** | No DR (Healthy) | {summary['grade_distribution'].get(0, 0)} | *N/A (No lesions)* | *N/A* | *N/A* | *N/A* |
+| **Grade Unavailable** | Unique Segmentation Images | {unavail_cnt} | *N/A (Excluded from grade-wise)* | *N/A* | *N/A* | *N/A* |
+
+> [!NOTE]
+> **Grade-Wise Stratification Protocol:** Grade-wise analysis evaluates strictly the {verified_cnt} images with verified IDRiD disease grading labels (matched from the IDRiD training cohort). The {unavail_cnt} unique segmentation images lack external disease grading labels and are marked as 'Grade Unavailable' rather than assigned invented grades; they are fully evaluated in the overall composite lesion localization benchmarks (N=78) but excluded from grade-specific rows.
 
 ---
 
@@ -419,18 +482,20 @@ def main() -> int:
         if args.dry_run:
             logging.info("Manifest not found on disk. Generating synthetic records for all 81 segmentation images (78 primary, 3 supplementary)...")
             results = []
-            # 81 images: 57 train-matched, 3 test-matched, 21 unique
+            # 81 images: 57 train-matched (grades 1-4), 3 test-matched (grades 1-4), 21 unique (grade=None)
             for i in range(81):
-                g = (i % 4) + 1  # grades 1 to 4
                 h = np.random.rand(512, 512).astype(np.float32)
                 m = (np.random.rand(512, 512) > 0.95).astype(np.uint8)
                 masks = {"MA": m, "HE": m, "EX": m, "SE": m, "composite": m, "OD": m}
                 if i < 57:
                     co = "idrid_grading_train_cohort"
+                    g = (i % 4) + 1  # verified grades 1 to 4
                 elif i < 60:
                     co = "idrid_grading_test_cohort"
+                    g = (i % 4) + 1  # supplementary test cohort
                 else:
                     co = "idrid_seg_unique"
+                    g = None  # Grade unavailable for the 21 unique segmentation images
 
                 res = evaluate_single_image_localization(
                     heatmap=h,
@@ -479,8 +544,8 @@ def main() -> int:
     sha256_before = compute_file_sha256(args.checkpoint)
     logging.info(f"Checkpoint SHA-256 before inference: {sha256_before}")
 
-    # Load cohort overlap mapping
-    cohort_overlap_map = load_cohort_overlap_mapping(args.matches_json)
+    # Load cohort overlap and verified grade mapping
+    cohort_overlap_map, seg_grade_map = load_cohort_and_grade_mapping(args.matches_json)
 
     # Initialize model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -539,11 +604,25 @@ def main() -> int:
             img_stem = Path(str(row["image_id"])).stem
             cohort_origin = str(row.get("cohort_origin", cohort_overlap_map.get(img_stem, "idrid_seg_unique")))
 
+            # Assign verified grade:
+            # - Unique segmentation images MUST have grade=None (unavailable)
+            # - Train-matched images get their verified grade from seg_grade_map or manifest
+            # - Supplementary test-matched images get their test grade
+            if cohort_origin == "idrid_seg_unique":
+                grade_val = None
+            elif "grade" in row and pd.notna(row["grade"]) and str(row["grade"]).strip() != "":
+                try:
+                    grade_val = int(row["grade"])
+                except (ValueError, TypeError):
+                    grade_val = seg_grade_map.get(img_stem)
+            else:
+                grade_val = seg_grade_map.get(img_stem)
+
             img_res = evaluate_single_image_localization(
                 heatmap=heatmap,
                 ground_truth_masks=gt_masks,
                 image_id=str(row["image_id"]),
-                grade=int(row.get("grade", 2)),
+                grade=grade_val,
                 thresholds=thresholds,
                 annotation_status=annotation_status,
                 cohort_origin=cohort_origin,

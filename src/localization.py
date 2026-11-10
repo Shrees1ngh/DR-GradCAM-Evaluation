@@ -115,7 +115,7 @@ def evaluate_single_image_localization(
     heatmap: np.ndarray,
     ground_truth_masks: Dict[str, np.ndarray],
     image_id: str,
-    grade: int,
+    grade: Optional[int] = None,
     thresholds: Optional[List[float]] = None,
     annotation_status: Optional[Dict[str, bool]] = None,
     cohort_origin: str = "idrid_seg_unique",
@@ -124,13 +124,16 @@ def evaluate_single_image_localization(
 
     Evaluates across multiple percentile thresholds (e.g. top 5%, 10%, 20%).
     Handles Grade 0 by designating all lesion overlaps as None / N/A.
+    For images without verified grading labels (e.g. 21 unique segmentation images),
+    grade is set to None (unavailable) and excluded from grade-wise stratification
+    while still evaluated for overall lesion localization.
 
     Args:
         heatmap: 2D normalized Grad-CAM heatmap (H, W) with float values in [0.0, 1.0].
         ground_truth_masks: Dictionary mapping structure codes ('MA', 'HE', 'EX', 'SE',
                             'composite', 'OD') to binary arrays (H, W).
         image_id: Unique image identifier string.
-        grade: Ground-truth ICDR DR grade (0-4).
+        grade: Ground-truth ICDR DR grade (0-4), or None if grade is unavailable.
         thresholds: List of percentile cutoffs (default: [0.05, 0.10, 0.20]).
         annotation_status: Optional dict flagging whether each lesion type was annotated
                            (e.g., SE is unannotated in 41 IDRiD images).
@@ -143,11 +146,11 @@ def evaluate_single_image_localization(
     thresholds = thresholds or [0.05, 0.10, 0.20]
     annotation_status = annotation_status or {}
 
-    is_grade_0 = int(grade) == 0
+    is_grade_0 = (int(grade) == 0) if grade is not None else False
 
     eval_result: Dict[str, Any] = {
         "image_id": image_id,
-        "grade": int(grade),
+        "grade": int(grade) if grade is not None else None,
         "is_grade_0": is_grade_0,
         "cohort_origin": cohort_origin,
         "thresholds": thresholds,
@@ -244,9 +247,14 @@ def aggregate_localization_scores(
         Structured summary with mean, median, std, and grade-wise breakdowns.
     """
     total_images = len(results)
-    grade_counts: Dict[int, int] = {g: 0 for g in range(5)}
+    grade_counts: Dict[Union[int, str], int] = {g: 0 for g in range(5)}
+    grade_counts["unavailable"] = 0
     for r in results:
-        grade_counts[r["grade"]] = grade_counts.get(r["grade"], 0) + 1
+        g = r.get("grade")
+        if g is not None and isinstance(g, int) and 0 <= g <= 4:
+            grade_counts[g] = grade_counts.get(g, 0) + 1
+        else:
+            grade_counts["unavailable"] = grade_counts.get("unavailable", 0) + 1
 
     summary: Dict[str, Any] = {
         "total_images": total_images,
@@ -290,7 +298,7 @@ def aggregate_localization_scores(
     od_dices: List[float] = []
 
     for r in results:
-        g = r["grade"]
+        g = r.get("grade")
         co = r.get("cohort_origin", "unspecified")
         is_test_overlap = (co == "idrid_grading_test_cohort")
 
@@ -308,27 +316,27 @@ def aggregate_localization_scores(
         if c_iou is not None:
             comp_ious.append(c_iou)
             cohort_data[co]["iou"].append(c_iou)
-            if g in grade_data:
+            if g is not None and g in grade_data:
                 grade_data[g]["iou"].append(c_iou)
 
             if is_test_overlap:
                 supp_comp_ious.append(c_iou)
             else:
                 primary_comp_ious.append(c_iou)
-                if g in primary_grade_data:
+                if g is not None and g in primary_grade_data:
                     primary_grade_data[g]["iou"].append(c_iou)
 
         if c_dice is not None:
             comp_dices.append(c_dice)
             cohort_data[co]["dice"].append(c_dice)
-            if g in grade_data:
+            if g is not None and g in grade_data:
                 grade_data[g]["dice"].append(c_dice)
 
             if is_test_overlap:
                 supp_comp_dices.append(c_dice)
             else:
                 primary_comp_dices.append(c_dice)
-                if g in primary_grade_data:
+                if g is not None and g in primary_grade_data:
                     primary_grade_data[g]["dice"].append(c_dice)
 
         if is_test_overlap:
@@ -382,8 +390,10 @@ def aggregate_localization_scores(
         }
 
     # Primary Cohort Summary (Excludes 3 test overlap images)
+    primary_total = total_images - len(supp_images_detail)
     summary["primary_cohort"] = {
         "description": "Primary non-overlapping localization cohort (excludes IDRiD grading test overlap)",
+        "total_images": primary_total,
         "composite_iou": _calc_stats(primary_comp_ious),
         "composite_dice": _calc_stats(primary_comp_dices),
         "grade_wise": {
@@ -409,11 +419,13 @@ def aggregate_localization_scores(
     # Supplementary Test Cohort Summary (N=3: IDRiD_09, IDRiD_22, IDRiD_31)
     summary["supplementary_test_cohort"] = {
         "description": "Supplementary test-overlap cohort (N=3 images matching IDRiD grading test set)",
+        "total_images": len(supp_images_detail),
         "composite_iou": _calc_stats(supp_comp_ious),
         "composite_dice": _calc_stats(supp_comp_dices),
         "images": supp_images_detail,
     }
 
+    summary["overall_composite"]["total_images"] = total_images
     summary["overall_composite"]["iou"] = _calc_stats(comp_ious)
     summary["overall_composite"]["dice"] = _calc_stats(comp_dices)
 

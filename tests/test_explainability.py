@@ -218,3 +218,70 @@ def test_gradcam_batch_cam():
         assert heatmap.shape == (128, 128)
         assert 0 <= cls_idx < 5
 
+
+def test_gradcam_gradients_with_frozen_model_parameters():
+    """Verify Grad-CAM activation gradients are calculated on layer4 while model weights remain frozen."""
+    torch = pytest.importorskip("torch")
+    from src.explainability import GradCAM
+    from src.model import build_model
+
+    model = build_model(pretrained=False, num_classes=5)
+
+    # Explicitly freeze all parameters
+    for p in model.parameters():
+        p.requires_grad = False
+    model.eval()
+
+    # Snapshot initial weights
+    initial_weights = {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+    dummy_input = torch.randn(1, 3, 256, 256)
+
+    with GradCAM(model) as explainer:
+        heatmap, pred_c = explainer.generate_cam(dummy_input)
+
+        # 1. Forward pass creates computation graph and captures layer4 activations
+        assert explainer.activations is not None
+        assert explainer.activations.shape[1] == 2048  # ResNet-50 layer4 channels
+
+        # 2. Backward pass computes activation gradients on layer4
+        assert explainer.gradients is not None
+        assert explainer.gradients.shape == explainer.activations.shape
+
+        # 3. Activation gradients are non-zero for a valid test image
+        assert bool((explainer.gradients.abs() > 0).any().item()) is True
+
+        # 4. Model parameters have param.grad is None (zero weight updates)
+        assert all(p.grad is None for p in model.parameters())
+
+    # 5. Model weights remain 100% bit-exact unchanged before and after Grad-CAM generation
+    current_weights = model.state_dict()
+    for k, init_tensor in initial_weights.items():
+        assert torch.equal(init_tensor, current_weights[k])
+
+    assert isinstance(heatmap, np.ndarray)
+    assert heatmap.shape == (256, 256)
+
+
+def test_gradcam_under_torch_no_grad_context():
+    """Verify GradCAM generates valid heatmaps and activation gradients even under with torch.no_grad()."""
+    torch = pytest.importorskip("torch")
+    from src.explainability import GradCAM
+    from src.model import build_model
+
+    model = build_model(pretrained=False, num_classes=5)
+    for p in model.parameters():
+        p.requires_grad = False
+    model.eval()
+
+    dummy_input = torch.randn(1, 3, 128, 128)
+
+    with GradCAM(model) as explainer:
+        with torch.no_grad():
+            heatmap, pred_c = explainer.generate_cam(dummy_input)
+
+        assert explainer.gradients is not None
+        assert bool((explainer.gradients.abs() > 0).any().item()) is True
+        assert isinstance(heatmap, np.ndarray)
+        assert heatmap.shape == (128, 128)
+

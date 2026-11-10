@@ -469,13 +469,16 @@ def main() -> int:
             results: List[Dict[str, Any]] = []
 
             for i in range(args.dry_run_samples):
-                g = (i % 4) + 1
                 base_prob = float(0.65 + 0.30 * rng.random())
-                co = (
-                    "idrid_grading_train_cohort"
-                    if i < 57
-                    else ("idrid_grading_test_cohort" if i < 60 else "idrid_seg_unique")
-                )
+                if i < 57:
+                    co = "idrid_grading_train_cohort"
+                    g = (i % 4) + 1  # verified grade 1 to 4
+                elif i < 60:
+                    co = "idrid_grading_test_cohort"
+                    g = (i % 4) + 1  # supplementary test grade
+                else:
+                    co = "idrid_seg_unique"
+                    g = None  # Grade unavailable for the 21 unique images
 
                 eval_by_fill = {}
                 for fill in fill_strategies:

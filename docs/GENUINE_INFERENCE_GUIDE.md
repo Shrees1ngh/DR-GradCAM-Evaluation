@@ -154,3 +154,92 @@ python scripts/evaluate_faithfulness.py \
    - Structured JSON: `reports/phase_7_faithfulness_report.json`
    - Predictions CSV: `reports/faithfulness_predictions.csv`
 
+---
+
+## 7. Complete Google Colab Execution Notebook
+
+Copy-paste these exact code blocks into your Google Colab notebook with GPU runtime enabled (**Runtime > Change runtime type > T4 GPU**):
+
+### Cell 1: Mount Google Drive & Clone Repository
+```python
+from google.colab import drive
+import os
+
+drive.mount('/content/drive')
+
+# Clone repo and enter directory
+!git clone https://github.com/Shrees1ngh/DR-GradCAM-Evaluation.git
+%cd DR-GradCAM-Evaluation
+```
+
+### Cell 2: Install Dependencies
+```python
+!pip install -r requirements.txt
+```
+
+### Cell 3: Link Trained Checkpoint & Physical IDRiD Dataset
+```python
+import os
+import shutil
+
+# Ensure checkpoints directory exists
+os.makedirs("experiments/checkpoints", exist_ok=True)
+
+# Copy trained APTOS checkpoint from Google Drive
+# (Adjust source path to match your Google Drive folder structure)
+DRIVE_CKPT = "/content/drive/MyDrive/DR-GradCAM-Evaluation/best_model_qwk.pth"
+LOCAL_CKPT = "experiments/checkpoints/best_model_qwk.pth"
+
+if os.path.exists(DRIVE_CKPT):
+    shutil.copy(DRIVE_CKPT, LOCAL_CKPT)
+    print(f"✅ Checkpoint copied to {LOCAL_CKPT}")
+else:
+    print(f"⚠️ Checkpoint not found at {DRIVE_CKPT}. Please verify path!")
+
+# Extract or link raw IDRiD dataset into data/raw/IDRiD
+# Example: if stored as IDRiD.zip on Drive:
+DRIVE_IDRID_ZIP = "/content/drive/MyDrive/DR-GradCAM-Evaluation/IDRiD.zip"
+if os.path.exists(DRIVE_IDRID_ZIP):
+    !unzip -q {DRIVE_IDRID_ZIP} -d data/raw/
+    print("✅ IDRiD raw dataset unzipped to data/raw/")
+```
+
+### Cell 4: Preprocess IDRiD Images & Generate Aligned Manifests
+```python
+!python scripts/preprocess_data.py --size 512
+```
+
+### Cell 5: Run Genuine Domain Shift Diagnostic (N=413 IDRiD Train Images)
+```python
+!python scripts/diagnose_idrid_domain.py \
+    --checkpoint experiments/checkpoints/best_model_qwk.pth \
+    --idrid-manifest data/processed/idrid/external_train.csv
+```
+
+### Cell 6: Run Genuine Phase 6 Localization Evaluation (N=81 Images)
+```python
+!python scripts/evaluate_localization.py \
+    --checkpoint experiments/checkpoints/best_model_qwk.pth \
+    --manifest data/processed/idrid/segmentation_manifest.csv
+```
+
+### Cell 7: Run Genuine Phase 7 Faithfulness Evaluation (Deletion Test)
+```python
+!python scripts/evaluate_faithfulness.py \
+    --checkpoint experiments/checkpoints/best_model_qwk.pth \
+    --manifest data/processed/idrid/segmentation_manifest.csv \
+    --deletion-steps 0.10,0.20,0.30 \
+    --fill-strategies black,gaussian_blur \
+    --num-random-trials 5
+```
+
+### Cell 8: Sync Reports and Predictions Back to Google Drive
+```python
+DRIVE_REPORTS = "/content/drive/MyDrive/DR-GradCAM-Evaluation/reports"
+os.makedirs(DRIVE_REPORTS, exist_ok=True)
+
+!cp -r reports/* {DRIVE_REPORTS}/
+print(f"✅ All reports and predictions successfully backed up to {DRIVE_REPORTS}!")
+```
+
+

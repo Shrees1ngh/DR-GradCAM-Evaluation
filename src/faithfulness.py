@@ -240,7 +240,7 @@ def evaluate_progressive_deletion(
 
     results: Dict[str, Any] = {
         "image_id": image_id,
-        "true_grade": int(true_grade),
+        "true_grade": int(true_grade) if true_grade is not None else None,
         "predicted_grade": predicted_class,
         "target_class": int(target_class),
         "baseline_confidence": baseline_prob,
@@ -347,10 +347,14 @@ def aggregate_faithfulness_scores(
         Structured summary with mean drops, margins, and grade-wise breakdowns.
     """
     total_images = len(results)
-    grade_counts: Dict[int, int] = {g: 0 for g in range(5)}
+    grade_counts: Dict[Union[int, str], int] = {g: 0 for g in range(5)}
+    grade_counts["unavailable"] = 0
     for r in results:
-        g = r["true_grade"]
-        grade_counts[g] = grade_counts.get(g, 0) + 1
+        g = r.get("true_grade")
+        if g is not None and isinstance(g, int) and 0 <= g <= 4:
+            grade_counts[g] = grade_counts.get(g, 0) + 1
+        else:
+            grade_counts["unavailable"] = grade_counts.get("unavailable", 0) + 1
 
     summary: Dict[str, Any] = {
         "total_images": total_images,
@@ -370,7 +374,7 @@ def aggregate_faithfulness_scores(
     grade_random_drops: Dict[int, List[float]] = {g: [] for g in range(5)}
 
     for r in results:
-        g = r["true_grade"]
+        g = r.get("true_grade")
         fill_eval = r["evaluations_by_fill"].get(primary_fill, {})
 
         audc_s = fill_eval.get("audc_salient", 0.0)
@@ -384,7 +388,7 @@ def aggregate_faithfulness_scores(
         if fill_eval.get("overall_is_faithful", False):
             faithful_count += 1
 
-        if g in grade_audc_margins:
+        if g is not None and g in grade_audc_margins:
             grade_audc_margins[g].append(audc_m)
             grade_salient_drops[g].append(audc_s)
             grade_random_drops[g].append(audc_r)

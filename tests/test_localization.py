@@ -407,4 +407,92 @@ def test_gradcam_with_frozen_model_parameters():
         assert param.grad is None or torch.all(param.grad == 0)
 
 
+def test_grade_unavailable_single_image_localization():
+    """Verify evaluate_single_image_localization gracefully handles grade=None (unavailable label)."""
+    h = np.ones((50, 50), dtype=np.float32)
+    m = np.zeros((50, 50), dtype=np.uint8)
+    m[10:20, 10:20] = 1
+    masks = {"MA": m, "HE": m, "EX": m, "SE": m, "composite": m, "OD": m}
+
+    res = evaluate_single_image_localization(
+        heatmap=h,
+        ground_truth_masks=masks,
+        image_id="unique_seg_01",
+        grade=None,  # Grade unavailable
+        cohort_origin="idrid_seg_unique",
+    )
+
+    assert res["image_id"] == "unique_seg_01"
+    assert res["grade"] is None
+    assert res["is_grade_0"] is False
+    assert res["cohort_origin"] == "idrid_seg_unique"
+
+    # Metrics should still be computed for valid masks
+    t10 = res["metrics_by_threshold"]["top_10_pct"]
+    assert t10["lesions"]["composite"]["iou"] is not None
+
+
+def test_cohort_and_grade_stratification_exact_counts():
+    """Verify exact cohort and grade stratification across all 81 segmentation images:
+    - 57 training-matched images with verified grades.
+    - 21 unique images with grade=None (grade unavailable).
+    - 3 supplementary test-matched images strictly separate.
+    - Primary cohort total = 78 (57 + 21).
+    - Grade-wise analysis sums strictly to 57 images.
+    """
+    results = []
+    rng = np.random.default_rng(42)
+
+    for i in range(81):
+        h = rng.random((64, 64), dtype=np.float32)
+        m = np.zeros((64, 64), dtype=np.uint8)
+        m[15:35, 15:35] = 1
+        masks = {"MA": m, "HE": m, "EX": m, "SE": m, "composite": m, "OD": m}
+
+        if i < 57:
+            co = "idrid_grading_train_cohort"
+            g = (i % 4) + 1  # verified grade 1 to 4
+        elif i < 60:
+            co = "idrid_grading_test_cohort"
+            g = (i % 4) + 1  # supplementary test grade
+        else:
+            co = "idrid_seg_unique"
+            g = None  # grade unavailable
+
+        res = evaluate_single_image_localization(
+            heatmap=h,
+            ground_truth_masks=masks,
+            image_id=f"seg_{i+1:02d}",
+            grade=g,
+            cohort_origin=co,
+        )
+        results.append(res)
+
+    summary = aggregate_localization_scores(results, baseline_threshold_key="top_10_pct")
+
+    # 1. Total dataset count
+    assert summary["total_images"] == 81
+    assert summary["overall_composite"]["total_images"] == 81
+
+    # 2. Primary cohort count (57 matched + 21 unique = 78)
+    assert summary["primary_cohort"]["total_images"] == 78
+    assert summary["primary_cohort"]["composite_iou"]["count"] == 78
+    assert summary["primary_cohort"]["composite_dice"]["count"] == 78
+
+    # 3. Supplementary test cohort count (exactly 3)
+    assert summary["supplementary_test_cohort"]["total_images"] == 3
+    assert summary["supplementary_test_cohort"]["composite_iou"]["count"] == 3
+    assert len(summary["supplementary_test_cohort"]["images"]) == 3
+
+    # 4. Grade-wise stratification in primary cohort (sums strictly to 57 verified images)
+    grade_wise_sum = sum(
+        summary["primary_cohort"]["grade_wise"][f"grade_{g}"]["iou"]["count"]
+        for g in range(1, 5)
+    )
+    assert grade_wise_sum == 57
+
+    # 5. Grade unavailable count in distribution is exactly 21
+    assert summary["grade_distribution"]["unavailable"] == 21
+
+
 

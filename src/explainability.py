@@ -164,27 +164,28 @@ class GradCAM:
         orig_h, orig_w = input_tensor.shape[2], input_tensor.shape[3]
         out_size = target_size or (orig_h, orig_w)
 
-        input_tensor = input_tensor.to(self.device)
-        input_tensor.requires_grad_(True)
+        with torch.enable_grad():
+            input_tensor = input_tensor.to(self.device)
+            input_tensor.requires_grad_(True)
 
-        # Set model in evaluation mode
-        self.model.eval()
-        self.model.zero_grad()
+            # Set model in evaluation mode
+            self.model.eval()
+            self.model.zero_grad()
 
-        # Forward pass
-        logits = self.model(input_tensor)
+            # Forward pass creates computation graph from input_tensor through target layer
+            logits = self.model(input_tensor)
 
-        if target_class is None:
-            target_class = int(torch.argmax(logits, dim=1).item())
+            if target_class is None:
+                target_class = int(torch.argmax(logits, dim=1).item())
 
-        if target_class < 0 or target_class >= logits.size(1):
-            raise ValueError(
-                f"target_class {target_class} is out of bounds for model with {logits.size(1)} classes."
-            )
+            if target_class < 0 or target_class >= logits.size(1):
+                raise ValueError(
+                    f"target_class {target_class} is out of bounds for model with {logits.size(1)} classes."
+                )
 
-        # Backward pass on the target class score
-        score = logits[0, target_class]
-        score.backward(retain_graph=retain_graph)
+            # Backward pass on the target class score to compute activation gradients
+            score = logits[0, target_class]
+            score.backward(retain_graph=retain_graph)
 
         if self.activations is None or self.gradients is None:
             raise RuntimeError(
