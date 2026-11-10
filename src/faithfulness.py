@@ -71,6 +71,12 @@ def apply_ablation_mask(
     if ablation_mask.shape != (h, w):
         raise ValueError(f"Mask shape {ablation_mask.shape} does not match image {(h, w)}")
 
+    valid_strategies = {"black", "gaussian_blur", "mean"}
+    if fill_strategy not in valid_strategies:
+        raise ValueError(
+            f"Unrecognized fill_strategy '{fill_strategy}'. Must be 'black', 'gaussian_blur', or 'mean'."
+        )
+
     mask_bool = ablation_mask > 0
     ablated = image_rgb.copy()
 
@@ -89,11 +95,6 @@ def apply_ablation_mask(
     elif fill_strategy == "mean":
         mean_color = np.mean(image_rgb, axis=(0, 1)).astype(np.uint8)
         ablated[mask_bool] = mean_color
-
-    else:
-        raise ValueError(
-            f"Unrecognized fill_strategy '{fill_strategy}'. Must be 'black', 'gaussian_blur', or 'mean'."
-        )
 
     return ablated
 

@@ -120,3 +120,37 @@ python scripts/evaluate_localization.py \
 8. **Outputs Generated:**
    - Detailed Markdown: `reports/phase_6_localization_report.md`
    - Structured JSON: `reports/phase_6_localization_report.json`
+
+---
+
+## 6. Step 5: Run Genuine Phase 7 Grad-CAM Faithfulness Evaluation (Deletion Test)
+
+Evaluate decision fidelity via progressive salient region deletion and area-matched random controls:
+
+```bash
+python scripts/evaluate_faithfulness.py \
+    --checkpoint experiments/checkpoints/best_model_qwk.pth \
+    --manifest data/processed/idrid/segmentation_manifest.csv \
+    --deletion-steps 0.10,0.20,0.30 \
+    --fill-strategies black,gaussian_blur \
+    --num-random-trials 5
+```
+
+### Key Guarantees & Faithfulness Metrics:
+1. **Progressive Salient Deletion:** Progressively removes top 10%, 20%, and 30% most salient retinal regions identified by Grad-CAM.
+2. **Area-Matched Random Controls:** Generates 5 independent area-matched random binary masks per step, strictly constrained within the retinal Field of View (FOV) to prevent padding bias.
+3. **Dual Fill Strategies:**
+   - `black`: Canonical zero-fill baseline `(0, 0, 0)`.
+   - `gaussian_blur`: Neutral blurred fill ($k=21$) to control for high-frequency edge/OOD artifacts.
+4. **Primary vs Supplementary Separation:** Evaluates the 78 non-overlapping primary cohort and 3 test-matched supplementary cohort separately.
+5. **Metrics Computed:**
+   - Confidence drop: $\Delta p = p_{\text{base}} - p_{\text{ablated}}$
+   - Faithfulness Margin: $\mathcal{M} = \Delta p_{\text{salient}} - \Delta p_{\text{random}}$
+   - Area Under Deletion Curve (AUDC) and AUDC margin.
+   - Grade-wise breakdowns across ICDR grades 0 to 4.
+6. **Immutability Guarantee:** Model weights snapshot verified 100% bit-exact identical before and after execution.
+7. **Outputs Generated:**
+   - Detailed Markdown: `reports/phase_7_faithfulness_report.md`
+   - Structured JSON: `reports/phase_7_faithfulness_report.json`
+   - Predictions CSV: `reports/faithfulness_predictions.csv`
+

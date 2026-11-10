@@ -228,6 +228,36 @@ python scripts/train.py --eval-only --eval-external
 python scripts/train.py --eval-only --eval-external --checkpoint-path experiments/checkpoints/best_model_qwk.pth
 ```
 
+#### 6. Cross-Dataset Domain Shift Diagnostic (N=413 Training Images)
+Executes non-destructive evaluation verifying label mapping, preprocessing geometry, and per-grade recall:
+```bash
+python scripts/diagnose_idrid_domain.py \
+    --checkpoint experiments/checkpoints/best_model_qwk.pth \
+    --idrid-manifest data/processed/idrid/external_train.csv
+```
+
+#### 7. Phase 6: Grad-CAM Lesion Grounding & Localization Evaluation
+Evaluates IoU, Dice, EPG, AUC-ROC, and Hit Rate against expert lesion masks (78 primary, 3 supplementary):
+```bash
+python scripts/evaluate_localization.py \
+    --checkpoint experiments/checkpoints/best_model_qwk.pth \
+    --manifest data/processed/idrid/segmentation_manifest.csv
+```
+
+#### 8. Phase 7: Grad-CAM Faithfulness Evaluation (Deletion Test)
+Evaluates decision fidelity via progressive salient region deletion and area-matched random controls:
+```bash
+python scripts/evaluate_faithfulness.py \
+    --checkpoint experiments/checkpoints/best_model_qwk.pth \
+    --manifest data/processed/idrid/segmentation_manifest.csv
+```
+
+#### 9. Launch RetinaScope Streamlit Web Application
+Interactive web interface for DR grading and Grad-CAM visualization:
+```bash
+streamlit run app.py
+```
+
 ### Artifact & Output Locations
 Output directories are fully configurable via the `--output-dir` CLI flag or `outputs.output_dir` in `configs/config.yaml`. The target directory structure is automatically created if it does not exist:
 - **Default Local Output Locations:**
