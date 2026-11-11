@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+import re
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -453,12 +454,26 @@ def create_fov_contact_sheet(
     return sheet
 
 
+EXPECTED_IDRID_SEG_IDS: List[str] = [f"IDRiD_{i:02d}" for i in range(1, 82)]
+
+
+def normalize_idrid_seg_id(val: Any) -> str:
+    """Extract and normalize canonical IDRiD segmentation ID (e.g. 'IDRiD_01')."""
+    s = str(val).strip()
+    m = re.search(r"IDRiD_(\d+)", s, re.IGNORECASE)
+    if m:
+        num = int(m.group(1))
+        return f"IDRiD_{num:02d}"
+    return s
+
+
 def run_fov_quality_control(
     manifest_df: Optional[pd.DataFrame] = None,
     project_root: Optional[Path] = None,
     output_csv: Optional[Path] = None,
     output_md: Optional[Path] = None,
     montage_path: Optional[Path] = None,
+    expected_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Execute quality control checks across all segmentation FOV masks.
 
@@ -474,6 +489,7 @@ def run_fov_quality_control(
         output_csv: Target path for QC report CSV.
         output_md: Target path for QC report Markdown.
         montage_path: Optional path to save an overlay montage image (default: reports/fov_montage_81.png).
+        expected_ids: Optional custom sequence of expected image IDs (defaults to 81 IDRiD IDs).
 
     Returns:
         Summary dictionary with QC results and status.
@@ -486,13 +502,14 @@ def run_fov_quality_control(
         output_md = project_root / "reports" / "fov_qc_report.md"
     if montage_path is None:
         montage_path = project_root / "reports" / "fov_montage_81.png"
+    if expected_ids is None:
+        expected_ids = list(EXPECTED_IDRID_SEG_IDS)
+
+    expected_list = list(expected_ids)
+    expected_set = set(expected_list)
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     output_md.parent.mkdir(parents=True, exist_ok=True)
-
-    records = []
-    overlays: List[np.ndarray] = []
-    image_ids: List[str] = []
 
     pending_md_content = """# Retinal FOV Quality Control Report
 
@@ -521,6 +538,9 @@ def run_fov_quality_control(
             "total_evaluated": 0,
             "passed": 0,
             "failed": 0,
+            "missing_records": len(expected_list),
+            "duplicate_records": 0,
+            "unexpected_records": 0,
             "message": "Genuine 81-image validation remains pending. Segmentation manifest missing or empty.",
         }
 
@@ -542,12 +562,43 @@ def run_fov_quality_control(
             "total_evaluated": 0,
             "passed": 0,
             "failed": 0,
+            "missing_records": len(expected_list),
+            "duplicate_records": 0,
+            "unexpected_records": 0,
             "message": "Genuine 81-image validation remains pending. Segmentation images not found locally.",
         }
 
+    manifest_id_counts: Dict[str, int] = {}
+    manifest_ids: List[str] = []
+
+    for idx, row in manifest_df.iterrows():
+        raw_id = row.get("original_id") or row.get("image_id", f"img_{idx}")
+        canon_id = normalize_idrid_seg_id(raw_id)
+        manifest_ids.append(canon_id)
+        manifest_id_counts[canon_id] = manifest_id_counts.get(canon_id, 0) + 1
+
+    duplicate_ids = {cid for cid, cnt in manifest_id_counts.items() if cnt > 1}
+    unexpected_ids = {cid for cid in manifest_id_counts.keys() if cid not in expected_set}
+    missing_ids = [exp_id for exp_id in expected_list if exp_id not in manifest_id_counts]
+
+    seen_ids = set()
+    records = []
+    overlays: List[np.ndarray] = []
+    image_ids: List[str] = []
+
     # Evaluate each segmentation image and mask across all manifest records
     for idx, row in manifest_df.iterrows():
-        img_id = str(row.get("image_id", f"img_{idx}"))
+        raw_id = row.get("original_id") or row.get("image_id", f"img_{idx}")
+        canon_id = normalize_idrid_seg_id(raw_id)
+        row_flags: List[str] = []
+
+        if canon_id in seen_ids:
+            row_flags.append("DUPLICATE_RECORD")
+        seen_ids.add(canon_id)
+
+        if canon_id in unexpected_ids:
+            row_flags.append("UNEXPECTED_RECORD")
+
         img_rel = row.get("processed_image_path", row.get("image_path", ""))
         fov_rel = row.get("fov_mask_path", row.get("mask_fov", ""))
 
@@ -555,14 +606,15 @@ def run_fov_quality_control(
         fov_path = project_root / fov_rel if fov_rel else None
 
         if not img_path or not img_path.exists() or not fov_path or not fov_path.exists():
+            row_flags.append("FILE_MISSING")
             records.append({
-                "image_id": img_id,
+                "image_id": canon_id,
                 "fov_pixels": 0,
                 "total_pixels": 0,
                 "fov_area_ratio": 0.0,
                 "circularity": 0.0,
                 "status": "FAILED",
-                "flags": "FILE_MISSING",
+                "flags": ";".join(row_flags),
             })
             continue
 
@@ -580,19 +632,36 @@ def run_fov_quality_control(
                 pad_offsets = None
 
         qc_res = evaluate_fov_mask_quality(img_rgb, fov_mask, pad_offsets=pad_offsets)
+        if qc_res["status"] == "FAILED":
+            row_flags.extend(qc_res["flags"])
+        status = "FAILED" if row_flags else "PASSED"
+        final_flags = row_flags if row_flags else ["VALID"]
+
         records.append({
-            "image_id": img_id,
+            "image_id": canon_id,
             "fov_pixels": qc_res["fov_pixels"],
             "total_pixels": qc_res["total_pixels"],
             "fov_area_ratio": round(qc_res["fov_area_ratio"], 4),
             "circularity": round(qc_res["circularity"], 4),
-            "status": qc_res["status"],
-            "flags": ";".join(qc_res["flags"]),
+            "status": status,
+            "flags": ";".join(final_flags),
         })
 
         overlay = create_fov_overlay(img_rgb, fov_mask)
         overlays.append(overlay)
-        image_ids.append(img_id)
+        image_ids.append(canon_id)
+
+    # Append any expected IDs completely missing from manifest
+    for mis_id in missing_ids:
+        records.append({
+            "image_id": mis_id,
+            "fov_pixels": 0,
+            "total_pixels": 0,
+            "fov_area_ratio": 0.0,
+            "circularity": 0.0,
+            "status": "FAILED",
+            "flags": "RECORD_MISSING",
+        })
 
     df_qc = pd.DataFrame(records)
     df_qc.to_csv(output_csv, index=False)
@@ -600,6 +669,9 @@ def run_fov_quality_control(
     total_eval = len(df_qc)
     passed_cnt = int((df_qc["status"] == "PASSED").sum())
     failed_cnt = total_eval - passed_cnt
+    missing_cnt = len(missing_ids)
+    duplicate_cnt = len(duplicate_ids)
+    unexpected_cnt = len(unexpected_ids)
     mean_ratio = float(df_qc["fov_area_ratio"].mean()) if total_eval > 0 else 0.0
 
     # Generate complete contact sheet montage covering all available overlay images
@@ -609,8 +681,16 @@ def run_fov_quality_control(
         cv2.imwrite(str(montage_path), cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
         logging.info(f"Complete FOV contact sheet saved to {montage_path} ({sheet.shape[1]}x{sheet.shape[0]} px, {len(overlays)} images)")
 
-    # Overall execution status: can ONLY be PASSED if 0 failures and total_eval >= 81
-    overall_status = "PASSED" if (failed_cnt == 0 and total_eval >= 81) else "FAILED"
+    # Overall execution status: can ONLY be PASSED if 0 failures, exactly 81 records, 0 missing/dup/unexpected
+    is_strict_passed = (
+        failed_cnt == 0
+        and total_eval == len(expected_list)
+        and len(expected_list) == 81
+        and missing_cnt == 0
+        and duplicate_cnt == 0
+        and unexpected_cnt == 0
+    )
+    overall_status = "PASSED" if is_strict_passed else "FAILED"
 
     def _table_to_markdown(df_subset: pd.DataFrame) -> str:
         try:
@@ -630,9 +710,13 @@ def run_fov_quality_control(
         "",
         f"## Execution Status: {overall_status}",
         "",
-        f"- **Total Segmentation Images Evaluated**: {total_eval}",
+        f"- **Expected IDRiD Segmentation Records**: {len(expected_list)}",
+        f"- **Total Segmentation Records Evaluated**: {total_eval}",
         f"- **Valid FOV Masks**: {passed_cnt}",
         f"- **Flagged / Missing / Anomalous Masks**: {failed_cnt}",
+        f"- **Missing Expected Records**: {missing_cnt}",
+        f"- **Duplicate Records**: {duplicate_cnt}",
+        f"- **Unexpected Records**: {unexpected_cnt}",
         f"- **Mean Active FOV Area Ratio**: {mean_ratio:.4f} (expected ~0.60 - 0.78)",
         f"- **Contact Sheet Montage**: `reports/fov_montage_81.png` (9x9 grid covering all {len(overlays)} available images)",
         "",
@@ -652,6 +736,9 @@ def run_fov_quality_control(
         "total_evaluated": total_eval,
         "passed": passed_cnt,
         "failed": failed_cnt,
+        "missing_records": missing_cnt,
+        "duplicate_records": duplicate_cnt,
+        "unexpected_records": unexpected_cnt,
         "mean_fov_area_ratio": mean_ratio,
         "montage_path": str(montage_path) if overlays else None,
     }
@@ -665,13 +752,15 @@ def validate_segmentation_masks(
     """Validate completeness, resolution, binarization, and pixel counts of all lesion masks.
 
     Checks:
-    1. Every expected annotated mask file exists on disk and is non-empty.
-    2. Every mask has the exact expected target dimensions (target_size).
-    3. Every mask is strictly binary with values in {0, 1} or {0, 255}.
-    4. Actual positive pixel count strictly matches manifest pixel_count_{code}.
-    5. Rejects negative counts for annotated masks and validates lesion_present_{code}.
-    6. Missing annotations remain distinguished (pixel_count = -1) from zero-lesion masks.
-    7. Validates composite_pixels against actual composite mask count.
+    1. Rejects missing, null, or empty manifest DataFrame.
+    2. Every expected annotated mask file exists on disk and is non-empty.
+    3. Every mask has the exact expected target dimensions (target_size).
+    4. Every mask is strictly binary with values in {0, 1} or {0, 255}.
+    5. Actual positive pixel count strictly matches manifest pixel_count_{code}.
+    6. Rejects missing, invalid, negative, or inconsistent pixel counts and presence metadata.
+    7. Missing annotations remain distinguished (pixel_count = -1, lesion_present = None) from zero-lesion masks.
+    8. Requires valid composite mask path and valid non-negative composite pixel-count metadata for every record.
+    9. Compares recorded composite pixel counts with actual decoded composite mask pixel counts.
 
     Args:
         manifest_df: DataFrame from segmentation_manifest.csv.
@@ -682,9 +771,13 @@ def validate_segmentation_masks(
         Validation statistics dictionary.
 
     Raises:
-        ValueError: If any annotated mask is missing, dimensions mismatch, values are non-binary,
-                    or pixel counts / presence flags are inconsistent.
+        ValueError: If manifest is empty, any required column/metadata is missing,
+                    any mask file is missing/empty/corrupted, dimensions mismatch,
+                    values are non-binary, or pixel counts / presence flags are inconsistent.
     """
+    if manifest_df is None or manifest_df.empty:
+        raise ValueError("Segmentation manifest DataFrame is missing, null, or empty.")
+
     if project_root is None:
         project_root = Path.cwd()
 
@@ -699,25 +792,47 @@ def validate_segmentation_masks(
         for code in lesion_codes:
             mask_col = f"mask_{code}"
             ann_col = f"annotated_{code}"
-            mask_rel = row.get(mask_col)
+            cnt_col = f"pixel_count_{code}"
+            pres_col = f"lesion_present_{code}"
 
-            is_annotated = bool(row.get(ann_col, True))
+            if ann_col not in row or pd.isna(row[ann_col]):
+                raise ValueError(
+                    f"Image {img_id}: missing required annotation status column '{ann_col}'!"
+                )
+            if cnt_col not in row or pd.isna(row[cnt_col]):
+                raise ValueError(
+                    f"Image {img_id}: missing required pixel-count metadata column '{cnt_col}' for lesion {code}!"
+                )
+
+            is_annotated = bool(row[ann_col])
 
             if not is_annotated:
                 missing_annotation_counts[code] += 1
-                cnt_col = f"pixel_count_{code}"
-                if cnt_col in row and row[cnt_col] != -1:
+                try:
+                    exp_cnt = int(row[cnt_col])
+                except (ValueError, TypeError) as e:
+                    raise ValueError(
+                        f"Image {img_id}: invalid non-integer pixel_count for unannotated lesion {code}: {row[cnt_col]}"
+                    ) from e
+
+                if exp_cnt != -1:
                     raise ValueError(
                         f"Image {img_id}: unannotated lesion {code} must have pixel_count = -1, got {row[cnt_col]}"
                     )
-                pres_col = f"lesion_present_{code}"
                 if pres_col in row and pd.notna(row[pres_col]):
                     raise ValueError(
                         f"Image {img_id}: unannotated lesion {code} must have lesion_present = None/NaN, got {row[pres_col]}"
                     )
                 continue
 
+            # Annotated lesion branch
             annotated_counts[code] += 1
+            if pres_col not in row or pd.isna(row[pres_col]):
+                raise ValueError(
+                    f"Image {img_id}: missing required presence metadata column '{pres_col}' for annotated lesion {code}!"
+                )
+
+            mask_rel = row.get(mask_col)
             if not mask_rel or pd.isna(mask_rel):
                 raise ValueError(f"Image {img_id}: annotated mask_{code} path is missing in manifest!")
 
@@ -741,58 +856,86 @@ def validate_segmentation_masks(
 
             actual_pos_pixels = int(np.sum(m_arr > 0))
 
-            cnt_col = f"pixel_count_{code}"
-            if cnt_col in row and pd.notna(row[cnt_col]):
+            try:
                 exp_cnt = int(row[cnt_col])
-                if exp_cnt < 0:
-                    raise ValueError(
-                        f"Image {img_id}: annotated mask_{code} has negative pixel count: {exp_cnt}"
-                    )
-                if actual_pos_pixels != exp_cnt:
-                    raise ValueError(
-                        f"Image {img_id}: pixel count mismatch for {code}. "
-                        f"Actual positive pixels: {actual_pos_pixels}, manifest value: {exp_cnt}"
-                    )
+            except (ValueError, TypeError) as e:
+                raise ValueError(
+                    f"Image {img_id}: invalid non-integer pixel_count for annotated lesion {code}: {row[cnt_col]}"
+                ) from e
 
-            pres_col = f"lesion_present_{code}"
-            if pres_col in row and pd.notna(row[pres_col]):
-                exp_present = bool(row[pres_col])
-                actual_present = bool(actual_pos_pixels > 0)
-                if actual_present != exp_present:
-                    raise ValueError(
-                        f"Image {img_id}: lesion_present disagreement for {code}. "
-                        f"Actual pixels > 0: {actual_present}, manifest specifies {exp_present}"
-                    )
+            if exp_cnt < 0:
+                raise ValueError(
+                    f"Image {img_id}: annotated mask_{code} has negative pixel count: {exp_cnt}"
+                )
+            if actual_pos_pixels != exp_cnt:
+                raise ValueError(
+                    f"Image {img_id}: pixel count mismatch for {code}. "
+                    f"Actual positive pixels: {actual_pos_pixels}, manifest value: {exp_cnt}"
+                )
+
+            exp_present = bool(row[pres_col])
+            actual_present = bool(actual_pos_pixels > 0)
+            if actual_present != exp_present:
+                raise ValueError(
+                    f"Image {img_id}: lesion_present disagreement for {code}. "
+                    f"Actual pixels > 0: {actual_present}, manifest specifies {exp_present}"
+                )
 
             total_checked += 1
 
-        # Composite mask validation
+        # Composite mask validation (required for every manifest record)
         comp_rel = row.get("mask_composite")
-        if comp_rel and pd.notna(comp_rel):
-            comp_path = project_root / str(comp_rel)
-            if not comp_path.exists() or comp_path.stat().st_size == 0:
-                raise ValueError(f"Image {img_id}: required composite mask file missing or empty: {comp_path}")
-            with Image.open(comp_path) as c_pil:
-                c_arr = np.array(c_pil.convert("L"))
-            if c_arr.shape != target_size:
-                raise ValueError(f"Image {img_id} composite mask resolution {c_arr.shape} != {target_size}")
-            if not set(np.unique(c_arr)).issubset({0, 1, 255}):
-                raise ValueError(f"Image {img_id} composite mask contains non-binary values: {set(np.unique(c_arr))}")
+        if not comp_rel or pd.isna(comp_rel):
+            raise ValueError(
+                f"Image {img_id}: required composite mask path 'mask_composite' is missing or null in manifest!"
+            )
 
-            actual_comp_pixels = int(np.sum(c_arr > 0))
-            for comp_col in ["composite_pixels", "pixel_count_composite"]:
-                if comp_col in row and pd.notna(row[comp_col]):
-                    exp_comp = int(row[comp_col])
-                    if actual_comp_pixels != exp_comp:
-                        raise ValueError(
-                            f"Image {img_id}: composite pixel count mismatch. "
-                            f"Actual: {actual_comp_pixels}, manifest {comp_col}: {exp_comp}"
-                        )
-            total_checked += 1
+        comp_path = project_root / str(comp_rel)
+        if not comp_path.exists() or comp_path.stat().st_size == 0:
+            raise ValueError(f"Image {img_id}: required composite mask file missing or empty: {comp_path}")
+
+        with Image.open(comp_path) as c_pil:
+            c_arr = np.array(c_pil.convert("L"))
+
+        if c_arr.shape != target_size:
+            raise ValueError(f"Image {img_id} composite mask resolution {c_arr.shape} != {target_size}")
+
+        if not set(np.unique(c_arr)).issubset({0, 1, 255}):
+            raise ValueError(f"Image {img_id} composite mask contains non-binary values: {set(np.unique(c_arr))}")
+
+        # Required composite pixel-count metadata
+        comp_val = None
+        for comp_col in ["composite_pixels", "pixel_count_composite"]:
+            if comp_col in row and pd.notna(row[comp_col]):
+                comp_val = row[comp_col]
+                break
+
+        if comp_val is None:
+            raise ValueError(
+                f"Image {img_id}: missing required composite pixel-count metadata ('composite_pixels' or 'pixel_count_composite')!"
+            )
+
+        try:
+            exp_comp = int(comp_val)
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Image {img_id}: invalid non-integer composite pixel count: {comp_val}"
+            ) from e
+
+        if exp_comp < 0:
+            raise ValueError(f"Image {img_id}: negative composite pixel count: {exp_comp}")
+
+        actual_comp_pixels = int(np.sum(c_arr > 0))
+        if actual_comp_pixels != exp_comp:
+            raise ValueError(
+                f"Image {img_id}: composite pixel count mismatch. "
+                f"Actual positive pixels: {actual_comp_pixels}, manifest value: {exp_comp}"
+            )
 
     return {
         "status": "PASSED",
-        "total_masks_validated": total_checked,
+        "total_records_checked": len(manifest_df),
+        "total_lesion_masks_checked": total_checked,
         "annotated_counts": annotated_counts,
         "missing_annotation_counts": missing_annotation_counts,
     }

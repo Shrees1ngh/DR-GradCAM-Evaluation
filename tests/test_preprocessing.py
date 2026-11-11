@@ -645,6 +645,59 @@ def test_validate_segmentation_masks_valid_and_invalid(tmp_path: Path):
         validate_segmentation_masks(df_bad_res, project_root=tmp_path, target_size=(512, 512))
 
 
+    # Case: Empty manifest raises ValueError
+    with pytest.raises(ValueError, match="manifest DataFrame is missing, null, or empty"):
+        validate_segmentation_masks(pd.DataFrame(), project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Missing mask_composite path raises ValueError
+    df_no_comp_path = pd.DataFrame([{**row_valid, "mask_composite": ""}])
+    with pytest.raises(ValueError, match="required composite mask path 'mask_composite' is missing or null"):
+        validate_segmentation_masks(df_no_comp_path, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Missing composite pixel count metadata raises ValueError
+    row_no_comp_meta = {**row_valid}
+    del row_no_comp_meta["composite_pixels"]
+    df_no_comp_meta = pd.DataFrame([row_no_comp_meta])
+    with pytest.raises(ValueError, match="missing required composite pixel-count metadata"):
+        validate_segmentation_masks(df_no_comp_meta, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Negative composite pixel count raises ValueError
+    df_neg_comp = pd.DataFrame([{**row_valid, "composite_pixels": -5}])
+    with pytest.raises(ValueError, match="negative composite pixel count"):
+        validate_segmentation_masks(df_neg_comp, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Missing annotated status column raises ValueError
+    row_no_ann = {**row_valid}
+    del row_no_ann["annotated_MA"]
+    df_no_ann = pd.DataFrame([row_no_ann])
+    with pytest.raises(ValueError, match="missing required annotation status column 'annotated_MA'"):
+        validate_segmentation_masks(df_no_ann, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Missing pixel count metadata column raises ValueError
+    row_no_cnt = {**row_valid}
+    del row_no_cnt["pixel_count_MA"]
+    df_no_cnt = pd.DataFrame([row_no_cnt])
+    with pytest.raises(ValueError, match="missing required pixel-count metadata column 'pixel_count_MA'"):
+        validate_segmentation_masks(df_no_cnt, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Missing presence metadata for annotated lesion raises ValueError
+    row_no_pres = {**row_valid}
+    del row_no_pres["lesion_present_MA"]
+    df_no_pres = pd.DataFrame([row_no_pres])
+    with pytest.raises(ValueError, match="missing required presence metadata column 'lesion_present_MA'"):
+        validate_segmentation_masks(df_no_pres, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Non-integer pixel count raises ValueError
+    df_non_int_cnt = pd.DataFrame([{**row_valid, "pixel_count_MA": "invalid_number"}])
+    with pytest.raises(ValueError, match="invalid non-integer pixel_count"):
+        validate_segmentation_masks(df_non_int_cnt, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Non-integer composite pixel count raises ValueError
+    df_non_int_comp = pd.DataFrame([{**row_valid, "composite_pixels": "bad_count"}])
+    with pytest.raises(ValueError, match="invalid non-integer composite pixel count"):
+        validate_segmentation_masks(df_non_int_comp, project_root=tmp_path, target_size=(512, 512))
+
+
 def test_run_fov_quality_control_first_missing_regression(tmp_path: Path):
     """Verify FOV QC evaluates all records and fails safely when first image is missing."""
     from src.preprocessing import run_fov_quality_control
@@ -684,6 +737,7 @@ def test_run_fov_quality_control_first_missing_regression(tmp_path: Path):
         output_csv=out_csv,
         output_md=out_md,
         montage_path=out_montage,
+        expected_ids=["IDRiD_01", "IDRiD_02"],
     )
 
     # Must NOT report PENDING
@@ -702,5 +756,119 @@ def test_run_fov_quality_control_first_missing_regression(tmp_path: Path):
     assert df_res.loc[0, "flags"] == "FILE_MISSING"
     assert df_res.loc[0, "status"] == "FAILED"
     assert df_res.loc[1, "status"] == "PASSED"
+
+
+def test_run_fov_quality_control_81_images_pass(tmp_path: Path):
+    """Verify FOV QC marks PASSED when all 81 expected images are valid and unique."""
+    from src.preprocessing import run_fov_quality_control
+
+    img_dir = tmp_path / "images"
+    fov_dir = tmp_path / "fov"
+    img_dir.mkdir()
+    fov_dir.mkdir()
+
+    y, x = np.ogrid[:100, :100]
+    base_img = np.ones((100, 100, 3), dtype=np.uint8) * 128
+    base_fov = ((y - 50)**2 + (x - 50)**2 <= 47**2).astype(np.uint8) * 255
+
+    rows = []
+    for i in range(1, 82):
+        img_id = f"IDRiD_{i:02d}"
+        ip = img_dir / f"{img_id}.jpg"
+        fp = fov_dir / f"{img_id}_fov.png"
+        Image.fromarray(base_img).save(ip)
+        Image.fromarray(base_fov).save(fp)
+        rows.append({
+            "image_id": f"idrid/seg/{img_id}",
+            "original_id": img_id,
+            "processed_image_path": str(ip.relative_to(tmp_path)),
+            "fov_mask_path": str(fp.relative_to(tmp_path)),
+        })
+
+    df_81 = pd.DataFrame(rows)
+    out_csv = tmp_path / "qc_81.csv"
+    out_md = tmp_path / "qc_81.md"
+    out_montage = tmp_path / "qc_81_montage.png"
+
+    res = run_fov_quality_control(
+        df_81,
+        project_root=tmp_path,
+        output_csv=out_csv,
+        output_md=out_md,
+        montage_path=out_montage,
+    )
+
+    assert res["status"] == "PASSED"
+    assert res["total_evaluated"] == 81
+    assert res["passed"] == 81
+    assert res["failed"] == 0
+    assert res["missing_records"] == 0
+    assert res["duplicate_records"] == 0
+    assert res["unexpected_records"] == 0
+    assert out_montage.exists()
+
+    df_qc = pd.read_csv(out_csv)
+    assert len(df_qc) == 81
+    assert (df_qc["status"] == "PASSED").all()
+
+
+def test_run_fov_quality_control_detects_duplicates_and_unexpected(tmp_path: Path):
+    """Verify FOV QC flags duplicate and unexpected image records as FAILED."""
+    from src.preprocessing import run_fov_quality_control
+
+    y, x = np.ogrid[:100, :100]
+    base_img = np.ones((100, 100, 3), dtype=np.uint8) * 128
+    base_fov = ((y - 50)**2 + (x - 50)**2 <= 47**2).astype(np.uint8) * 255
+
+    ip1 = tmp_path / "IDRiD_01.jpg"
+    fp1 = tmp_path / "IDRiD_01_fov.png"
+    Image.fromarray(base_img).save(ip1)
+    Image.fromarray(base_fov).save(fp1)
+
+    ip_unexp = tmp_path / "IDRiD_99.jpg"
+    fp_unexp = tmp_path / "IDRiD_99_fov.png"
+    Image.fromarray(base_img).save(ip_unexp)
+    Image.fromarray(base_fov).save(fp_unexp)
+
+    df_dup = pd.DataFrame([
+        {
+            "image_id": "IDRiD_01",
+            "processed_image_path": str(ip1.relative_to(tmp_path)),
+            "fov_mask_path": str(fp1.relative_to(tmp_path)),
+        },
+        {
+            "image_id": "IDRiD_01",  # Duplicate ID
+            "processed_image_path": str(ip1.relative_to(tmp_path)),
+            "fov_mask_path": str(fp1.relative_to(tmp_path)),
+        },
+        {
+            "image_id": "IDRiD_99",  # Unexpected ID (>81)
+            "processed_image_path": str(ip_unexp.relative_to(tmp_path)),
+            "fov_mask_path": str(fp_unexp.relative_to(tmp_path)),
+        },
+    ])
+
+    out_csv = tmp_path / "qc_dup.csv"
+    out_md = tmp_path / "qc_dup.md"
+
+    res = run_fov_quality_control(
+        df_dup,
+        project_root=tmp_path,
+        output_csv=out_csv,
+        output_md=out_md,
+    )
+
+    assert res["status"] == "FAILED"
+    assert res["duplicate_records"] >= 1
+    assert res["unexpected_records"] >= 1
+
+    df_qc = pd.read_csv(out_csv)
+    # The duplicate record has DUPLICATE_RECORD flag
+    assert any("DUPLICATE_RECORD" in str(f) for f in df_qc["flags"])
+    # The unexpected record has UNEXPECTED_RECORD flag
+    assert any("UNEXPECTED_RECORD" in str(f) for f in df_qc["flags"])
+    # Missing expected records (IDRiD_02 through IDRiD_81) are present with RECORD_MISSING
+    assert any("RECORD_MISSING" in str(f) for f in df_qc["flags"])
+
 
 

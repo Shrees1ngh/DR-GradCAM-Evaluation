@@ -74,11 +74,70 @@ def test_load_trained_model_missing():
         load_trained_model("non_existent_dir/missing_model.pth")
 
 
+def test_full_pipeline_unit_mock(tmp_path: Path):
+    """Unit test: full pipeline (load checkpoint, run inference, Grad-CAM) using an independent mock checkpoint."""
+    from src.model import build_model
+
+    # Construct mock model and save as checkpoint in tmp_path
+    base_model = build_model(num_classes=5, pretrained=False, dropout_rate=0.3)
+    mock_ckpt_path = tmp_path / "mock_best_model.pth"
+    torch.save(
+        {
+            "epoch": 8,
+            "best_val_qwk": 0.85,
+            "model_state_dict": base_model.state_dict(),
+        },
+        mock_ckpt_path,
+    )
+
+    device = torch.device("cpu")
+    model, meta = load_trained_model(mock_ckpt_path, device=device)
+
+    assert model is not None
+    assert meta["best_val_qwk"] == 0.85
+    assert meta["epoch"] == 8
+
+    # Create dummy retinal image
+    synthetic = np.zeros((400, 400, 3), dtype=np.uint8)
+    synthetic[50:350, 50:350, 1] = 150
+    pil_img = Image.fromarray(synthetic)
+
+    preprocessed_rgb, tensor_img, _ = preprocess_retinal_image(
+        pil_img, target_size=(512, 512), crop_fov=True, device=device
+    )
+
+    # 1. Run forward inference
+    result = run_inference(model, tensor_img)
+    assert "predicted_grade" in result
+    assert result["predicted_grade"] in [0, 1, 2, 3, 4]
+    assert len(result["probabilities"]) == 5
+    prob_sum = sum(result["probabilities"].values())
+    assert pytest.approx(prob_sum, rel=1e-3) == 1.0
+
+    # 2. Run Grad-CAM
+    heatmap, overlay, grayscale_cam, stats = compute_gradcam(
+        model, tensor_img, preprocessed_rgb, target_grade=result["predicted_grade"]
+    )
+
+    assert heatmap.shape == (512, 512, 3)
+    assert overlay.shape == (512, 512, 3)
+    assert grayscale_cam.shape == (512, 512)
+    assert grayscale_cam.min() >= 0.0
+    assert grayscale_cam.max() <= 1.0
+    assert "coverage_baseline_10pct" in stats
+    assert "peak_coordinate" in stats
+
+
+@pytest.mark.integration
 def test_full_pipeline_with_checkpoint():
     """Integration test: load real checkpoint, run inference, compute Grad-CAM."""
     ckpt_path = Path("experiments/checkpoints/best_model_qwk.pth")
     if not ckpt_path.exists():
-        pytest.skip("Trained checkpoint not found on disk.")
+        pytest.skip(
+            "Integration test skipped: genuine trained checkpoint "
+            "'experiments/checkpoints/best_model_qwk.pth' not found on disk. "
+            "Place genuine trained weights to execute."
+        )
 
     device = torch.device("cpu")
     model, meta = load_trained_model(ckpt_path, device=device)
