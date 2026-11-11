@@ -545,10 +545,15 @@ def export_localization_predictions_csv(results: List[Dict[str, Any]], output_cs
             "composite_iou_top_10": comp.get("iou"),
             "composite_dice_top_10": comp.get("dice"),
             "ma_iou_top_10": ma.get("iou"),
+            "ma_dice_top_10": ma.get("dice"),
             "he_iou_top_10": he.get("iou"),
+            "he_dice_top_10": he.get("dice"),
             "ex_iou_top_10": ex.get("iou"),
+            "ex_dice_top_10": ex.get("dice"),
             "se_iou_top_10": se.get("iou"),
+            "se_dice_top_10": se.get("dice"),
             "od_iou_top_10": od.get("iou"),
+            "od_dice_top_10": od.get("dice"),
         })
     df = pd.DataFrame(rows)
     output_csv.parent.mkdir(parents=True, exist_ok=True)

@@ -552,24 +552,27 @@ def test_create_fov_contact_sheet():
 
 
 def test_validate_segmentation_masks_valid_and_invalid(tmp_path: Path):
-    """Verify validate_segmentation_masks checks existence, resolution, and binary values."""
+    """Verify validate_segmentation_masks checks existence, resolution, binary values, and pixel counts."""
     from src.preprocessing import validate_segmentation_masks
 
-    # Create valid dummy masks
     mask_dir = tmp_path / "masks"
     mask_dir.mkdir()
 
-    m_ma = Image.fromarray(np.ones((512, 512), dtype=np.uint8) * 255)
+    # 1. Exactly 500 positive pixels (50 x 10)
+    m_ma_arr = np.zeros((512, 512), dtype=np.uint8)
+    m_ma_arr[0:50, 0:10] = 255
+    m_ma = Image.fromarray(m_ma_arr)
     p_ma = mask_dir / "m_ma.png"
     m_ma.save(p_ma)
 
+    # 2. All-zero annotated mask (0 positive pixels, lesion absent)
     m_he = Image.fromarray(np.zeros((512, 512), dtype=np.uint8))
     p_he = mask_dir / "m_he.png"
     m_he.save(p_he)
 
-    m_comp = Image.fromarray(np.ones((512, 512), dtype=np.uint8) * 255)
+    # 3. Composite mask with matching 500 pixels
     p_comp = mask_dir / "m_comp.png"
-    m_comp.save(p_comp)
+    m_ma.save(p_comp)
 
     # Valid manifest row
     row_valid = {
@@ -577,19 +580,25 @@ def test_validate_segmentation_masks_valid_and_invalid(tmp_path: Path):
         "mask_MA": str(p_ma.relative_to(tmp_path)),
         "annotated_MA": True,
         "pixel_count_MA": 500,
+        "lesion_present_MA": True,
         "mask_HE": str(p_he.relative_to(tmp_path)),
         "annotated_HE": True,
         "pixel_count_HE": 0,
+        "lesion_present_HE": False,
         "mask_EX": "",
         "annotated_EX": False,
         "pixel_count_EX": -1,
+        "lesion_present_EX": None,
         "mask_SE": "",
         "annotated_SE": False,
         "pixel_count_SE": -1,
+        "lesion_present_SE": None,
         "mask_OD": "",
         "annotated_OD": False,
         "pixel_count_OD": -1,
+        "lesion_present_OD": None,
         "mask_composite": str(p_comp.relative_to(tmp_path)),
+        "composite_pixels": 500,
     }
     df_valid = pd.DataFrame([row_valid])
 
@@ -598,6 +607,26 @@ def test_validate_segmentation_masks_valid_and_invalid(tmp_path: Path):
     assert res["annotated_counts"]["MA"] == 1
     assert res["annotated_counts"]["HE"] == 1
     assert res["missing_annotation_counts"]["EX"] == 1
+
+    # Case: Pixel count mismatch raises ValueError
+    df_mismatch = pd.DataFrame([{**row_valid, "pixel_count_MA": 400}])
+    with pytest.raises(ValueError, match="pixel count mismatch for MA"):
+        validate_segmentation_masks(df_mismatch, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Negative pixel count for annotated lesion raises ValueError
+    df_neg = pd.DataFrame([{**row_valid, "pixel_count_MA": -10}])
+    with pytest.raises(ValueError, match="negative pixel count"):
+        validate_segmentation_masks(df_neg, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: lesion_present disagreement raises ValueError
+    df_pres_disagree = pd.DataFrame([{**row_valid, "lesion_present_MA": False}])
+    with pytest.raises(ValueError, match="lesion_present disagreement"):
+        validate_segmentation_masks(df_pres_disagree, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Composite pixel count mismatch raises ValueError
+    df_comp_mismatch = pd.DataFrame([{**row_valid, "composite_pixels": 999}])
+    with pytest.raises(ValueError, match="composite pixel count mismatch"):
+        validate_segmentation_masks(df_comp_mismatch, project_root=tmp_path, target_size=(512, 512))
 
     # Case: Non-binary values raise ValueError
     m_bad_vals = Image.fromarray(np.ones((512, 512), dtype=np.uint8) * 128)
@@ -614,5 +643,64 @@ def test_validate_segmentation_masks_valid_and_invalid(tmp_path: Path):
     df_bad_res = pd.DataFrame([{**row_valid, "mask_MA": str(p_res.relative_to(tmp_path))}])
     with pytest.raises(ValueError, match="does not match expected"):
         validate_segmentation_masks(df_bad_res, project_root=tmp_path, target_size=(512, 512))
+
+
+def test_run_fov_quality_control_first_missing_regression(tmp_path: Path):
+    """Verify FOV QC evaluates all records and fails safely when first image is missing."""
+    from src.preprocessing import run_fov_quality_control
+
+    # Image 1 is available
+    img1_p = tmp_path / "img1.jpg"
+    fov1_p = tmp_path / "fov1.png"
+
+    y, x = np.ogrid[:100, :100]
+    img1 = np.ones((100, 100, 3), dtype=np.uint8) * 128
+    fov1 = ((y - 50)**2 + (x - 50)**2 <= 47**2).astype(np.uint8)
+
+    Image.fromarray(img1).save(img1_p)
+    Image.fromarray(fov1 * 255).save(fov1_p)
+
+    # Manifest with 2 rows: row 0 is missing, row 1 is present
+    df = pd.DataFrame([
+        {
+            "image_id": "IDRiD_01",
+            "processed_image_path": str((tmp_path / "missing_01.jpg").relative_to(tmp_path)),
+            "fov_mask_path": str((tmp_path / "missing_01_fov.png").relative_to(tmp_path)),
+        },
+        {
+            "image_id": "IDRiD_02",
+            "processed_image_path": str(img1_p.relative_to(tmp_path)),
+            "fov_mask_path": str(fov1_p.relative_to(tmp_path)),
+        },
+    ])
+
+    out_csv = tmp_path / "qc_reg.csv"
+    out_md = tmp_path / "qc_reg.md"
+    out_montage = tmp_path / "qc_reg_montage.png"
+
+    res = run_fov_quality_control(
+        df,
+        project_root=tmp_path,
+        output_csv=out_csv,
+        output_md=out_md,
+        montage_path=out_montage,
+    )
+
+    # Must NOT report PENDING
+    assert res["status"] != "PENDING"
+    # Overall status cannot be PASSED when an image is missing
+    assert res["status"] == "FAILED"
+    assert res["total_evaluated"] == 2
+    assert res["passed"] == 1
+    assert res["failed"] == 1
+
+    # Check that contact sheet montage was created for the available image
+    assert out_montage.exists()
+
+    df_res = pd.read_csv(out_csv)
+    assert len(df_res) == 2
+    assert df_res.loc[0, "flags"] == "FILE_MISSING"
+    assert df_res.loc[0, "status"] == "FAILED"
+    assert df_res.loc[1, "status"] == "PASSED"
 
 

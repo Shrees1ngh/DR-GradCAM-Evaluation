@@ -613,6 +613,23 @@ def test_export_localization_predictions_csv(tmp_path: Path):
     assert df.loc[0, "true_grade"] == 2
     assert pd.isna(df.loc[1, "true_grade"])
     assert df.loc[0, "composite_iou_top_10"] == 0.45
+    assert df.loc[0, "composite_dice_top_10"] == 0.62
+    assert df.loc[0, "ma_iou_top_10"] == 0.30
+    assert df.loc[0, "ma_dice_top_10"] == 0.46
+    assert df.loc[0, "he_iou_top_10"] == 0.25
+    assert df.loc[0, "he_dice_top_10"] == 0.40
+    assert pd.isna(df.loc[0, "ex_iou_top_10"])
+    assert pd.isna(df.loc[0, "ex_dice_top_10"])
+    assert df.loc[0, "se_iou_top_10"] == 0.15
+    assert df.loc[0, "se_dice_top_10"] == 0.26
+    assert df.loc[0, "od_iou_top_10"] == 0.05
+    assert df.loc[0, "od_dice_top_10"] == 0.10
+
+    # Ensure unannotated lesions in seg_02 preserve None/NaN, not converted to 0.0
+    assert pd.isna(df.loc[1, "ma_iou_top_10"])
+    assert pd.isna(df.loc[1, "ma_dice_top_10"])
+    assert pd.isna(df.loc[1, "he_iou_top_10"])
+    assert pd.isna(df.loc[1, "he_dice_top_10"])
     assert df.loc[1, "cohort_origin"] == "idrid_seg_unique"
 
 

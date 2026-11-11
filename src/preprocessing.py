@@ -332,15 +332,18 @@ def evaluate_fov_mask_quality(
         if perimeter > 0:
             circularity = float(4.0 * np.pi * area / (perimeter * perimeter))
 
+    # Quality-control screening heuristics for circular retinal aperture geometry on square canvas:
+    # An ideal circular aperture inscribed in a square canvas covers pi/4 (~78.54%) of total area.
+    # Allowing for FOV centering pad margins (typically <= 3%) and camera aperture framing:
+    # - UNUSUALLY_SMALL (< 0.50): operational screening heuristic for aperture truncation or foreground loss.
+    # - UNUSUALLY_LARGE (> 0.85): operational screening heuristic for threshold leakage into black canvas corners.
+    # - IRREGULAR_GEOMETRY (< 0.60): operational screening heuristic for non-circular contour deformities.
+    # Note: These values are operational screening heuristics, not clinical ground truth or empirical cutoffs.
     if fov_pixels == 0:
         flags.append("EMPTY_FOV")
     elif fov_area_ratio < 0.50:
-        # An inscribed retinal circle in a square covers ~78.5% of area.
-        # Accounting for FOV cropping and centering padding (<=3%), the valid active area
-        # is expected to be ~60%-78%. Ratios below 50% indicate severe clipping or foreground loss.
         flags.append("UNUSUALLY_SMALL")
     elif fov_area_ratio > 0.85:
-        # Ratios above 85% indicate threshold leakage outside the circular aperture into the black corners.
         flags.append("UNUSUALLY_LARGE")
 
     # Retinal aperture contour circularity check (ideal circle = 1.0)
@@ -488,39 +491,52 @@ def run_fov_quality_control(
     output_md.parent.mkdir(parents=True, exist_ok=True)
 
     records = []
-    images_available = False
+    overlays: List[np.ndarray] = []
+    image_ids: List[str] = []
 
-    if manifest_df is not None and not manifest_df.empty:
-        # Check if the first image actually exists on disk
-        first_row = manifest_df.iloc[0]
-        first_img_rel = first_row.get("processed_image_path", "")
-        first_img_path = project_root / first_img_rel if first_img_rel else None
-        if first_img_path and first_img_path.exists():
-            images_available = True
-
-    if not images_available:
-        # Generate clean pending report
-        cols = ["image_id", "fov_pixels", "total_pixels", "fov_area_ratio", "circularity", "status", "flags"]
-        empty_df = pd.DataFrame(columns=cols)
-        empty_df.to_csv(output_csv, index=False)
-
-        md_content = """# Retinal FOV Quality Control Report
+    pending_md_content = """# Retinal FOV Quality Control Report
 
 ## Status: PENDING
 
 > **Notice**: Genuine 81-image validation remains pending. IDRiD segmentation dataset is not present in this local workspace.
 > Field of View (FOV) Quality Control validation will execute automatically during genuine execution in Google Colab.
 
-### Required Dataset Specification
+### Quality Control Screening Heuristics
 - Expected Images: 81
 - Format: Centered square (512x512)
-- Expected Active Retinal Area Ratio: ~0.60 - 0.78 (theoretical max for inscribed circle: pi/4 = 78.54%)
+- Screening Area Ratio Heuristic: ~0.60 - 0.78 (theoretical upper limit for an inscribed circle in a square: pi/4 = 78.54%)
 - Flags to monitor: `EMPTY_FOV`, `UNUSUALLY_SMALL` (< 0.50), `UNUSUALLY_LARGE` (> 0.85), `PADDING_LEAK`, `IRREGULAR_GEOMETRY` (< 0.60)
 
 > [!NOTE]
-> Mathematical quality control confirms geometry, aperture bounds, circularity, and absence of canvas margin leakage. It does not claim clinical expert boundary accuracy or fine anatomic margin verification.
+> **Methodological Clarification:** The area-ratio and circularity thresholds are operational screening heuristics based on circular aperture geometry on a square canvas. They are not empirically validated diagnostic boundaries and do not replace clinical expert verification of fine anatomic margin delineation.
 """
-        output_md.write_text(md_content, encoding="utf-8")
+
+    if manifest_df is None or manifest_df.empty:
+        cols = ["image_id", "fov_pixels", "total_pixels", "fov_area_ratio", "circularity", "status", "flags"]
+        empty_df = pd.DataFrame(columns=cols)
+        empty_df.to_csv(output_csv, index=False)
+        output_md.write_text(pending_md_content, encoding="utf-8")
+        return {
+            "status": "PENDING",
+            "total_evaluated": 0,
+            "passed": 0,
+            "failed": 0,
+            "message": "Genuine 81-image validation remains pending. Segmentation manifest missing or empty.",
+        }
+
+    # Inspect all records to check if any genuine images exist on disk
+    any_images_exist = False
+    for _, row in manifest_df.iterrows():
+        img_rel = row.get("processed_image_path", row.get("image_path", ""))
+        if img_rel and (project_root / img_rel).exists():
+            any_images_exist = True
+            break
+
+    if not any_images_exist:
+        cols = ["image_id", "fov_pixels", "total_pixels", "fov_area_ratio", "circularity", "status", "flags"]
+        empty_df = pd.DataFrame(columns=cols)
+        empty_df.to_csv(output_csv, index=False)
+        output_md.write_text(pending_md_content, encoding="utf-8")
         return {
             "status": "PENDING",
             "total_evaluated": 0,
@@ -529,19 +545,16 @@ def run_fov_quality_control(
             "message": "Genuine 81-image validation remains pending. Segmentation images not found locally.",
         }
 
-    # Evaluate each segmentation image and mask
-    overlays: List[np.ndarray] = []
-    image_ids: List[str] = []
-
+    # Evaluate each segmentation image and mask across all manifest records
     for idx, row in manifest_df.iterrows():
         img_id = str(row.get("image_id", f"img_{idx}"))
         img_rel = row.get("processed_image_path", row.get("image_path", ""))
         fov_rel = row.get("fov_mask_path", row.get("mask_fov", ""))
 
-        img_path = project_root / img_rel
+        img_path = project_root / img_rel if img_rel else None
         fov_path = project_root / fov_rel if fov_rel else None
 
-        if not img_path.exists() or not fov_path or not fov_path.exists():
+        if not img_path or not img_path.exists() or not fov_path or not fov_path.exists():
             records.append({
                 "image_id": img_id,
                 "fov_pixels": 0,
@@ -589,37 +602,53 @@ def run_fov_quality_control(
     failed_cnt = total_eval - passed_cnt
     mean_ratio = float(df_qc["fov_area_ratio"].mean()) if total_eval > 0 else 0.0
 
-    # Generate complete 81-image contact sheet montage
+    # Generate complete contact sheet montage covering all available overlay images
     if overlays:
         sheet = create_fov_contact_sheet(overlays, image_ids, grid_size=(9, 9), thumb_size=(128, 128))
         montage_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(montage_path), cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
-        logging.info(f"Complete FOV contact sheet saved to {montage_path} ({sheet.shape[1]}x{sheet.shape[0]} px)")
+        logging.info(f"Complete FOV contact sheet saved to {montage_path} ({sheet.shape[1]}x{sheet.shape[0]} px, {len(overlays)} images)")
+
+    # Overall execution status: can ONLY be PASSED if 0 failures and total_eval >= 81
+    overall_status = "PASSED" if (failed_cnt == 0 and total_eval >= 81) else "FAILED"
+
+    def _table_to_markdown(df_subset: pd.DataFrame) -> str:
+        try:
+            return df_subset.to_markdown(index=False)
+        except (ImportError, ModuleNotFoundError):
+            if df_subset.empty:
+                return "*(empty table)*"
+            headers = [str(col) for col in df_subset.columns]
+            rows = [[str(val) for val in row] for row in df_subset.itertuples(index=False)]
+            return "\n".join([
+                "| " + " | ".join(headers) + " |",
+                "| " + " | ".join(["---"] * len(headers)) + " |",
+            ] + ["| " + " | ".join(r) + " |" for r in rows])
 
     md_lines = [
         "# Retinal FOV Quality Control Report",
         "",
-        f"## Execution Status: {'PASSED' if failed_cnt == 0 else 'WARNING'}",
+        f"## Execution Status: {overall_status}",
         "",
         f"- **Total Segmentation Images Evaluated**: {total_eval}",
         f"- **Valid FOV Masks**: {passed_cnt}",
-        f"- **Flagged / Anomalous Masks**: {failed_cnt}",
+        f"- **Flagged / Missing / Anomalous Masks**: {failed_cnt}",
         f"- **Mean Active FOV Area Ratio**: {mean_ratio:.4f} (expected ~0.60 - 0.78)",
-        f"- **Contact Sheet Montage**: `reports/fov_montage_81.png` (9x9 grid covering all {len(overlays)} images)",
+        f"- **Contact Sheet Montage**: `reports/fov_montage_81.png` (9x9 grid covering all {len(overlays)} available images)",
         "",
         "> [!NOTE]",
-        "> Mathematical quality control confirms geometry, aperture bounds, circularity, and absence of canvas margin leakage.",
-        "> It does not claim clinical expert boundary accuracy or fine anatomic margin verification.",
+        "> **Methodological Clarification:** Area-ratio and circularity thresholds are operational screening heuristics based on circular aperture geometry.",
+        "> They are not empirically validated diagnostic boundaries and do not replace clinical expert verification of fine anatomic margin delineation.",
         "",
         "### Quality Control Summary Table",
         "",
-        df_qc.head(20).to_markdown(index=False),
+        _table_to_markdown(df_qc.head(20)),
         "",
     ]
     output_md.write_text("\n".join(md_lines), encoding="utf-8")
 
     return {
-        "status": "PASSED" if failed_cnt == 0 else "WARNING",
+        "status": overall_status,
         "total_evaluated": total_eval,
         "passed": passed_cnt,
         "failed": failed_cnt,
@@ -633,13 +662,16 @@ def validate_segmentation_masks(
     project_root: Optional[Path] = None,
     target_size: Tuple[int, int] = (512, 512),
 ) -> Dict[str, Any]:
-    """Validate completeness, resolution, and binarization of all lesion masks.
+    """Validate completeness, resolution, binarization, and pixel counts of all lesion masks.
 
     Checks:
     1. Every expected annotated mask file exists on disk and is non-empty.
     2. Every mask has the exact expected target dimensions (target_size).
-    3. Every mask is strictly binary with values in {0, 1}.
-    4. Missing annotations remain distinguished from annotated zero-lesion masks.
+    3. Every mask is strictly binary with values in {0, 1} or {0, 255}.
+    4. Actual positive pixel count strictly matches manifest pixel_count_{code}.
+    5. Rejects negative counts for annotated masks and validates lesion_present_{code}.
+    6. Missing annotations remain distinguished (pixel_count = -1) from zero-lesion masks.
+    7. Validates composite_pixels against actual composite mask count.
 
     Args:
         manifest_df: DataFrame from segmentation_manifest.csv.
@@ -650,12 +682,13 @@ def validate_segmentation_masks(
         Validation statistics dictionary.
 
     Raises:
-        ValueError: If any annotated mask is missing, dimensions mismatch, or values are non-binary.
+        ValueError: If any annotated mask is missing, dimensions mismatch, values are non-binary,
+                    or pixel counts / presence flags are inconsistent.
     """
     if project_root is None:
         project_root = Path.cwd()
 
-    lesion_codes = ["MA", "HE", "EX", "SE", "OD", "composite"]
+    lesion_codes = ["MA", "HE", "EX", "SE", "OD"]
     total_checked = 0
     annotated_counts = {c: 0 for c in lesion_codes}
     missing_annotation_counts = {c: 0 for c in lesion_codes}
@@ -668,16 +701,19 @@ def validate_segmentation_masks(
             ann_col = f"annotated_{code}"
             mask_rel = row.get(mask_col)
 
-            # composite is always expected
-            is_annotated = bool(row.get(ann_col, True)) if code != "composite" else True
+            is_annotated = bool(row.get(ann_col, True))
 
             if not is_annotated:
                 missing_annotation_counts[code] += 1
-                # Must be documented with pixel_count = -1
                 cnt_col = f"pixel_count_{code}"
                 if cnt_col in row and row[cnt_col] != -1:
                     raise ValueError(
                         f"Image {img_id}: unannotated lesion {code} must have pixel_count = -1, got {row[cnt_col]}"
+                    )
+                pres_col = f"lesion_present_{code}"
+                if pres_col in row and pd.notna(row[pres_col]):
+                    raise ValueError(
+                        f"Image {img_id}: unannotated lesion {code} must have lesion_present = None/NaN, got {row[pres_col]}"
                     )
                 continue
 
@@ -697,12 +733,61 @@ def validate_segmentation_masks(
                     f"Image {img_id} mask_{code} resolution {m_arr.shape} does not match expected {target_size}"
                 )
 
-            # Strictly binary {0, 1} or {0, 255}
             u_vals = set(np.unique(m_arr))
             if not u_vals.issubset({0, 1, 255}):
                 raise ValueError(
                     f"Image {img_id} mask_{code} contains non-binary values: {u_vals}"
                 )
+
+            actual_pos_pixels = int(np.sum(m_arr > 0))
+
+            cnt_col = f"pixel_count_{code}"
+            if cnt_col in row and pd.notna(row[cnt_col]):
+                exp_cnt = int(row[cnt_col])
+                if exp_cnt < 0:
+                    raise ValueError(
+                        f"Image {img_id}: annotated mask_{code} has negative pixel count: {exp_cnt}"
+                    )
+                if actual_pos_pixels != exp_cnt:
+                    raise ValueError(
+                        f"Image {img_id}: pixel count mismatch for {code}. "
+                        f"Actual positive pixels: {actual_pos_pixels}, manifest value: {exp_cnt}"
+                    )
+
+            pres_col = f"lesion_present_{code}"
+            if pres_col in row and pd.notna(row[pres_col]):
+                exp_present = bool(row[pres_col])
+                actual_present = bool(actual_pos_pixels > 0)
+                if actual_present != exp_present:
+                    raise ValueError(
+                        f"Image {img_id}: lesion_present disagreement for {code}. "
+                        f"Actual pixels > 0: {actual_present}, manifest specifies {exp_present}"
+                    )
+
+            total_checked += 1
+
+        # Composite mask validation
+        comp_rel = row.get("mask_composite")
+        if comp_rel and pd.notna(comp_rel):
+            comp_path = project_root / str(comp_rel)
+            if not comp_path.exists() or comp_path.stat().st_size == 0:
+                raise ValueError(f"Image {img_id}: required composite mask file missing or empty: {comp_path}")
+            with Image.open(comp_path) as c_pil:
+                c_arr = np.array(c_pil.convert("L"))
+            if c_arr.shape != target_size:
+                raise ValueError(f"Image {img_id} composite mask resolution {c_arr.shape} != {target_size}")
+            if not set(np.unique(c_arr)).issubset({0, 1, 255}):
+                raise ValueError(f"Image {img_id} composite mask contains non-binary values: {set(np.unique(c_arr))}")
+
+            actual_comp_pixels = int(np.sum(c_arr > 0))
+            for comp_col in ["composite_pixels", "pixel_count_composite"]:
+                if comp_col in row and pd.notna(row[comp_col]):
+                    exp_comp = int(row[comp_col])
+                    if actual_comp_pixels != exp_comp:
+                        raise ValueError(
+                            f"Image {img_id}: composite pixel count mismatch. "
+                            f"Actual: {actual_comp_pixels}, manifest {comp_col}: {exp_comp}"
+                        )
             total_checked += 1
 
     return {
