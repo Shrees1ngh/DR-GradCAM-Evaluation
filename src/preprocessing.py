@@ -7,10 +7,12 @@ Maintains pixel-perfect spatial alignment between fundus images and lesion masks
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+import pandas as pd
 from PIL import Image
 
 logger = logging.getLogger("preprocessing")
@@ -279,3 +281,275 @@ def build_composite_lesion_mask(
 
     composite = np.bitwise_or.reduce(masks_to_combine)
     return (composite > 0).astype(np.uint8)
+
+
+def evaluate_fov_mask_quality(
+    image_rgb: np.ndarray,
+    fov_mask: np.ndarray,
+    pad_offsets: Optional[Tuple[int, int, int, int]] = None,
+) -> Dict[str, Any]:
+    """Evaluate quality and geometry of a generated retinal FOV mask.
+
+    Validates:
+    1. Spatial dimension match between image and mask.
+    2. Strict binary {0, 1} mask values.
+    3. FOV pixel count and active retinal area ratio.
+    4. Contour circularity.
+    5. Zero encroachment into padded margins (PADDING_LEAK).
+    6. Identifies anomalies (EMPTY_FOV, UNUSUALLY_SMALL, UNUSUALLY_LARGE, PADDING_LEAK).
+
+    Args:
+        image_rgb: RGB fundus image array (H, W, 3).
+        fov_mask: Binary FOV mask array (H, W).
+        pad_offsets: Tuple (pad_top, pad_bottom, pad_left, pad_right).
+
+    Returns:
+        Dictionary with validation metrics, status ('PASSED' / 'FAILED'), and flags.
+    """
+    if image_rgb.shape[:2] != fov_mask.shape[:2]:
+        raise ValueError(
+            f"Image shape {image_rgb.shape[:2]} does not match FOV mask shape {fov_mask.shape[:2]}"
+        )
+
+    unique_vals = set(np.unique(fov_mask))
+    if not unique_vals.issubset({0, 1}):
+        raise ValueError(f"FOV mask must be strictly binary {{0, 1}}, got values: {unique_vals}")
+
+    h, w = fov_mask.shape[:2]
+    total_pixels = h * w
+    fov_pixels = int(np.sum(fov_mask == 1))
+    fov_area_ratio = float(fov_pixels / total_pixels) if total_pixels > 0 else 0.0
+
+    # Calculate circularity via contours
+    circularity = 0.0
+    contours, _ = cv2.findContours(fov_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        area = float(cv2.contourArea(largest_contour))
+        perimeter = float(cv2.arcLength(largest_contour, True))
+        if perimeter > 0:
+            circularity = float(4.0 * np.pi * area / (perimeter * perimeter))
+
+    flags = []
+    if fov_pixels == 0:
+        flags.append("EMPTY_FOV")
+    elif fov_area_ratio < 0.20:
+        flags.append("UNUSUALLY_SMALL")
+    elif fov_area_ratio > 0.95:
+        flags.append("UNUSUALLY_LARGE")
+
+    # Check for padding leakage
+    if pad_offsets is not None:
+        pad_top, pad_bottom, pad_left, pad_right = pad_offsets
+        leak = False
+        if pad_top > 0 and np.any(fov_mask[:pad_top, :] > 0):
+            leak = True
+        if pad_bottom > 0 and np.any(fov_mask[h - pad_bottom:, :] > 0):
+            leak = True
+        if pad_left > 0 and np.any(fov_mask[:, :pad_left] > 0):
+            leak = True
+        if pad_right > 0 and np.any(fov_mask[:, w - pad_right:] > 0):
+            leak = True
+        if leak:
+            flags.append("PADDING_LEAK")
+
+    is_valid = len(flags) == 0
+    if is_valid:
+        status = "PASSED"
+        flags.append("VALID")
+    else:
+        status = "FAILED"
+
+    return {
+        "status": status,
+        "valid": is_valid,
+        "fov_pixels": fov_pixels,
+        "total_pixels": total_pixels,
+        "fov_area_ratio": fov_area_ratio,
+        "circularity": circularity,
+        "flags": flags,
+    }
+
+
+def create_fov_overlay(
+    image_rgb: np.ndarray,
+    fov_mask: np.ndarray,
+    color: Tuple[int, int, int] = (0, 255, 255),
+    thickness: int = 2,
+) -> np.ndarray:
+    """Create a visualization overlay of the FOV contour on the fundus image.
+
+    Args:
+        image_rgb: RGB fundus image (H, W, 3).
+        fov_mask: Binary FOV mask (H, W).
+        color: RGB tuple for contour line (default: cyan/yellow (0, 255, 255)).
+        thickness: Contour line thickness in pixels.
+
+    Returns:
+        RGB image with FOV boundary drawn.
+    """
+    overlay = image_rgb.copy()
+    contours, _ = cv2.findContours(
+        fov_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if contours:
+        cv2.drawContours(overlay, contours, -1, color, thickness)
+    return overlay
+
+
+def run_fov_quality_control(
+    manifest_df: Optional[pd.DataFrame] = None,
+    project_root: Optional[Path] = None,
+    output_csv: Optional[Path] = None,
+    output_md: Optional[Path] = None,
+    montage_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Execute quality control checks across all segmentation FOV masks.
+
+    If genuine segmentation images and masks exist on disk, validates each mask,
+    accumulates metrics, and outputs comprehensive CSV and Markdown reports.
+    If genuine images are absent, explicitly documents that genuine 81-image
+    validation remains pending.
+
+    Args:
+        manifest_df: DataFrame containing segmentation records (e.g. from idrid_seg_manifest.csv).
+        project_root: Project root path.
+        output_csv: Target path for QC report CSV.
+        output_md: Target path for QC report Markdown.
+        montage_path: Optional path to save an overlay montage image.
+
+    Returns:
+        Summary dictionary with QC results and status.
+    """
+    if project_root is None:
+        project_root = Path.cwd()
+    if output_csv is None:
+        output_csv = project_root / "reports" / "fov_qc_report.csv"
+    if output_md is None:
+        output_md = project_root / "reports" / "fov_qc_report.md"
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    output_md.parent.mkdir(parents=True, exist_ok=True)
+
+    records = []
+    images_available = False
+
+    if manifest_df is not None and not manifest_df.empty:
+        # Check if the first image actually exists on disk
+        first_row = manifest_df.iloc[0]
+        first_img_rel = first_row.get("processed_image_path", "")
+        first_img_path = project_root / first_img_rel if first_img_rel else None
+        if first_img_path and first_img_path.exists():
+            images_available = True
+
+    if not images_available:
+        # Generate clean pending report
+        cols = ["image_id", "fov_pixels", "total_pixels", "fov_area_ratio", "circularity", "status", "flags"]
+        empty_df = pd.DataFrame(columns=cols)
+        empty_df.to_csv(output_csv, index=False)
+
+        md_content = """# Retinal FOV Quality Control Report
+
+## Status: PENDING
+
+> **Notice**: Genuine 81-image validation remains pending. IDRiD segmentation dataset is not present in this local workspace.
+> Field of View (FOV) Quality Control validation will execute automatically during genuine execution in Google Colab.
+
+### Required Dataset Specification
+- Expected Images: 81
+- Format: Centered square (512x512)
+- Expected Active Retinal Area Ratio: ~0.60 - 0.75
+- Flags to monitor: `EMPTY_FOV`, `UNUSUALLY_SMALL`, `UNUSUALLY_LARGE`, `PADDING_LEAK`
+"""
+        output_md.write_text(md_content, encoding="utf-8")
+        return {
+            "status": "PENDING",
+            "total_evaluated": 0,
+            "passed": 0,
+            "failed": 0,
+            "message": "Genuine 81-image validation remains pending. Segmentation images not found locally.",
+        }
+
+    # Evaluate each segmentation image and mask
+    overlays = []
+    for idx, row in manifest_df.iterrows():
+        img_id = str(row.get("image_id", f"img_{idx}"))
+        img_rel = row.get("processed_image_path", "")
+        fov_rel = row.get("fov_mask_path", "")
+
+        img_path = project_root / img_rel
+        fov_path = project_root / fov_rel if fov_rel else None
+
+        if not img_path.exists() or not fov_path or not fov_path.exists():
+            records.append({
+                "image_id": img_id,
+                "fov_pixels": 0,
+                "total_pixels": 0,
+                "fov_area_ratio": 0.0,
+                "circularity": 0.0,
+                "status": "FAILED",
+                "flags": "FILE_MISSING",
+            })
+            continue
+
+        with Image.open(img_path) as pil_img:
+            img_rgb = np.array(pil_img.convert("RGB"), dtype=np.uint8)
+        with Image.open(fov_path) as pil_fov:
+            fov_mask = (np.array(pil_fov.convert("L")) > 0).astype(np.uint8)
+
+        pad_offsets = None
+        if "pad_offsets" in row and pd.notna(row["pad_offsets"]):
+            try:
+                import ast
+                pad_offsets = ast.literal_eval(str(row["pad_offsets"]))
+            except Exception:
+                pad_offsets = None
+
+        qc_res = evaluate_fov_mask_quality(img_rgb, fov_mask, pad_offsets=pad_offsets)
+        records.append({
+            "image_id": img_id,
+            "fov_pixels": qc_res["fov_pixels"],
+            "total_pixels": qc_res["total_pixels"],
+            "fov_area_ratio": round(qc_res["fov_area_ratio"], 4),
+            "circularity": round(qc_res["circularity"], 4),
+            "status": qc_res["status"],
+            "flags": ";".join(qc_res["flags"]),
+        })
+
+        if montage_path and len(overlays) < 16:
+            overlay = create_fov_overlay(img_rgb, fov_mask)
+            overlays.append(overlay)
+
+    df_qc = pd.DataFrame(records)
+    df_qc.to_csv(output_csv, index=False)
+
+    total_eval = len(df_qc)
+    passed_cnt = int((df_qc["status"] == "PASSED").sum())
+    failed_cnt = total_eval - passed_cnt
+    mean_ratio = float(df_qc["fov_area_ratio"].mean()) if total_eval > 0 else 0.0
+
+    md_lines = [
+        "# Retinal FOV Quality Control Report",
+        "",
+        f"## Execution Status: {'PASSED' if failed_cnt == 0 else 'WARNING'}",
+        "",
+        f"- **Total Segmentation Images Evaluated**: {total_eval}",
+        f"- **Valid FOV Masks**: {passed_cnt}",
+        f"- **Flagged / Anomalous Masks**: {failed_cnt}",
+        f"- **Mean Active FOV Area Ratio**: {mean_ratio:.4f} (expected ~0.60 - 0.75)",
+        "",
+        "### Quality Control Summary Table",
+        "",
+        df_qc.head(15).to_markdown(index=False),
+        "",
+    ]
+    output_md.write_text("\n".join(md_lines), encoding="utf-8")
+
+    return {
+        "status": "PASSED" if failed_cnt == 0 else "WARNING",
+        "total_evaluated": total_eval,
+        "passed": passed_cnt,
+        "failed": failed_cnt,
+        "mean_fov_area_ratio": mean_ratio,
+    }
+

@@ -26,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import logging
 import sys
@@ -47,10 +48,12 @@ from tqdm import tqdm
 from src.preprocessing import (
     build_composite_lesion_mask,
     crop_to_retinal_fov,
+    evaluate_fov_mask_quality,
     extract_retinal_fov_mask,
     preprocess_fundus_image,
     preprocess_mask_with_transform,
     resize_and_pad,
+    run_fov_quality_control,
 )
 
 
@@ -77,15 +80,20 @@ def _safe_relpath(path: Path) -> str:
 
 
 def _process_single_grading_image(
-    item: Tuple[str, int, int, Path, Path, Tuple[int, int], bool, str, str]
+    item: Tuple[Any, ...]
 ) -> dict:
     """Helper to process a single grading image (FOV crop, isotropic pad, write)."""
-    dataset_name, grade, dme_risk, raw_path, out_path, target_size, dry_run, split_name, img_id = item
+    if len(item) >= 10:
+        dataset_name, grade, dme_risk, raw_path, out_path, target_size, dry_run, split_name, img_id, force_reprocess = item[:10]
+    else:
+        dataset_name, grade, dme_risk, raw_path, out_path, target_size, dry_run, split_name, img_id = item[:9]
+        force_reprocess = False
+
     if not raw_path.exists():
         raise FileNotFoundError(f"Missing image: {raw_path}")
 
     if not dry_run:
-        if out_path.exists() and out_path.stat().st_size > 0:
+        if not force_reprocess and out_path.exists() and out_path.stat().st_size > 0:
             bbox_str = "(0, 0, 0, 0)"
             pad_str = "(0, 0, 0, 0)"
         else:
@@ -105,6 +113,7 @@ def _process_single_grading_image(
         "image_id": f"{dataset_name}/{split_name}/{img_id}",
         "original_id": img_id,
         "image_path": _safe_relpath(out_path),
+        "processed_image_path": _safe_relpath(out_path),
         "raw_path": _safe_relpath(raw_path),
         "grade": grade,
         "dme_risk": dme_risk,
@@ -120,6 +129,7 @@ def preprocess_aptos(
     seed: int = 42,
     workers: int = 8,
     dry_run: bool = False,
+    force_reprocess: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Stratified 80/20 train/val split and multi-threaded preprocessing for APTOS 2019."""
     aptos_cfg = config.get("dataset", {}).get("aptos", config.get("aptos", {}))
@@ -155,7 +165,7 @@ def preprocess_aptos(
             out_filename = f"{split_name}_{img_id}.png"
             out_path = images_out_dir / out_filename
             tasks.append((
-                "aptos", grade, -1, raw_path, out_path, target_size, dry_run, split_name, img_id
+                "aptos", grade, -1, raw_path, out_path, target_size, dry_run, split_name, img_id, force_reprocess
             ))
 
         desc = f"Preprocessing APTOS {split_name}"
@@ -185,6 +195,7 @@ def preprocess_idrid(
     target_size: Tuple[int, int] = (512, 512),
     workers: int = 8,
     dry_run: bool = False,
+    force_reprocess: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Preprocess IDRiD External Grading sets and Segmentation sets."""
     disease_cfg = config.get("dataset", {}).get("disease_grading", {})
@@ -227,7 +238,7 @@ def preprocess_idrid(
             out_filename = f"{split_name}_{img_id}.jpg"
             out_path = images_out_dir / out_filename
             tasks.append((
-                "idrid", grade, dme_risk, raw_path, out_path, target_size, dry_run, split_name, img_id
+                "idrid", grade, dme_risk, raw_path, out_path, target_size, dry_run, split_name, img_id, force_reprocess
             ))
 
         desc = f"Preprocessing IDRiD {split_name}"
@@ -246,7 +257,10 @@ def preprocess_idrid(
 
     # 2. IDRiD Segmentation Set (81 images)
     # Load exact match mapping to record cohort origin
-    matches_json_path = PROJECT_ROOT / "reports" / "idrid_seg_grading_matches.json"
+    matches_json_path = PROJECT_ROOT / "data" / "idrid_seg_grading_matches.json"
+    if not matches_json_path.exists():
+        matches_json_path = PROJECT_ROOT / "reports" / "idrid_seg_grading_matches.json"
+
     matches_info: Dict[str, Any] = {}
     if matches_json_path.exists():
         with open(matches_json_path, "r", encoding="utf-8") as f:
@@ -286,7 +300,7 @@ def preprocess_idrid(
             processed_img, meta = preprocess_fundus_image(
                 str(raw_img_path), target_size=target_size, crop_fov=True
             )
-            if not (out_img_path.exists() and out_img_path.stat().st_size > 0):
+            if force_reprocess or not (out_img_path.exists() and out_img_path.stat().st_size > 0):
                 cv2.imwrite(str(out_img_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
         else:
             meta = {
@@ -300,6 +314,7 @@ def preprocess_idrid(
             "image_id": f"idrid/seg/{img_id}",
             "original_id": img_id,
             "image_path": _safe_relpath(out_img_path),
+            "processed_image_path": _safe_relpath(out_img_path),
             "raw_path": _safe_relpath(raw_img_path),
             "crop_bbox": str(meta["crop_bbox"]),
             "pad_offsets": str(meta["pad_offsets"]),
@@ -323,7 +338,7 @@ def preprocess_idrid(
                     with Image.open(matching_masks[0]) as m_pil:
                         m_arr = np.array(m_pil)
                     binary_mask = preprocess_mask_with_transform(m_arr, meta)
-                    if not (mask_out_path.exists() and mask_out_path.stat().st_size > 0):
+                    if force_reprocess or not (mask_out_path.exists() and mask_out_path.stat().st_size > 0):
                         cv2.imwrite(str(mask_out_path), binary_mask * 255)
                     processed_masks[code] = binary_mask
                     pos_pixels = int(np.sum(binary_mask))
@@ -340,7 +355,7 @@ def preprocess_idrid(
                 rec[f"lesion_present_{code}"] = None
                 zero_mask = np.zeros(target_size, dtype=np.uint8)
                 if not dry_run:
-                    if not (mask_out_path.exists() and mask_out_path.stat().st_size > 0):
+                    if force_reprocess or not (mask_out_path.exists() and mask_out_path.stat().st_size > 0):
                         cv2.imwrite(str(mask_out_path), zero_mask)
                 processed_masks[code] = zero_mask
 
@@ -350,7 +365,7 @@ def preprocess_idrid(
 
         if not dry_run:
             composite = build_composite_lesion_mask(processed_masks)
-            if not (comp_out_path.exists() and comp_out_path.stat().st_size > 0):
+            if force_reprocess or not (comp_out_path.exists() and comp_out_path.stat().st_size > 0):
                 cv2.imwrite(str(comp_out_path), composite * 255)
             rec["composite_pixels"] = int(np.sum(composite))
         else:
@@ -359,10 +374,15 @@ def preprocess_idrid(
         # Consistent Retinal FOV mask derived from preprocessing geometry
         fov_out_path = seg_masks_out / "fov" / f"{img_id}_fov.png"
         rec["mask_fov"] = _safe_relpath(fov_out_path)
+        rec["fov_mask_path"] = _safe_relpath(fov_out_path)
 
         if not dry_run:
             fov_mask = extract_retinal_fov_mask(processed_img, pad_offsets=meta.get("pad_offsets"))
-            if not (fov_out_path.exists() and fov_out_path.stat().st_size > 0):
+            if fov_mask.shape != target_size:
+                raise ValueError(f"FOV mask shape {fov_mask.shape} does not match target_size {target_size}")
+            if not set(np.unique(fov_mask)).issubset({0, 1}):
+                raise ValueError(f"FOV mask values must be strictly binary {{0, 1}}")
+            if force_reprocess or not (fov_out_path.exists() and fov_out_path.stat().st_size > 0):
                 cv2.imwrite(str(fov_out_path), fov_mask * 255)
             rec["fov_pixels"] = int(np.sum(fov_mask))
         else:
@@ -373,6 +393,14 @@ def preprocess_idrid(
     idrid_seg_df = pd.DataFrame(seg_records)
     idrid_seg_df.to_csv(idrid_out_dir / "segmentation_manifest.csv", index=False)
 
+    # Execute actual-data FOV Quality Control stage
+    run_fov_quality_control(
+        manifest_df=idrid_seg_df,
+        project_root=PROJECT_ROOT,
+        output_csv=PROJECT_ROOT / "reports" / "fov_qc_report.csv",
+        output_md=PROJECT_ROOT / "reports" / "fov_qc_report.md",
+    )
+
     return idrid_train_df, idrid_test_df, idrid_seg_df
 
 
@@ -381,24 +409,81 @@ def verify_splits_leakage(
     aptos_val: pd.DataFrame,
     idrid_train: pd.DataFrame,
     idrid_test: pd.DataFrame,
+    idrid_seg: Optional[pd.DataFrame] = None,
+    validation_mode: str = "strict",
 ) -> Dict[str, Any]:
     """Strict zero-leakage check between training, validation, and test cohorts.
 
     Explicitly verifies:
-    1. APTOS Train vs Val Split Disjointness & Sample Count Conservation.
-    2. IDRiD Train vs Test Cohort Image-Identity Isolation (0 overlapping images).
-    3. IDRiD External Test Set preservation.
+    1. Image ID uniqueness within each cohort (flags duplicate identities).
+    2. APTOS Train vs Val Split Disjointness & Sample Count (3,662 in strict mode).
+    3. IDRiD Train vs Test Cohort Image-Identity Isolation (0 overlapping images).
+    4. IDRiD Training Set count (413 in strict mode).
+    5. IDRiD Test Set count (103 in strict mode).
+    6. IDRiD Segmentation Set count (81 in strict mode, if provided).
 
-    Returns dictionary containing individual check statuses ('PASSED', 'FAILED', 'SKIPPED'),
-    overall_status string, and audit finding notes.
+    Args:
+        aptos_train: DataFrame for APTOS training split.
+        aptos_val: DataFrame for APTOS validation split.
+        idrid_train: DataFrame for IDRiD grading training split.
+        idrid_test: DataFrame for IDRiD grading testing split.
+        idrid_seg: Optional DataFrame for IDRiD segmentation set.
+        validation_mode: 'strict' for genuine data counts; 'test' for synthetic test fixtures.
+
+    Returns:
+        Dictionary containing individual check statuses ('PASSED', 'FAILED', 'SKIPPED'),
+        overall_status string, and audit finding notes.
     """
     checks = []
     has_failure = False
 
-    # Check 1: APTOS Train vs Val Split Disjointness
+    def _extract_ids(df: pd.DataFrame) -> List[str]:
+        if df is None or len(df) == 0:
+            return []
+        for c in ["original_id", "image_id", "id_code", "Image name"]:
+            if c in df.columns:
+                ids = []
+                for x in df[c].dropna():
+                    s = Path(str(x)).stem
+                    s = s.split("/")[-1]
+                    ids.append(s)
+                return ids
+        return []
+
+    # Check Cohort Uniqueness
+    cohort_list = [
+        ("APTOS Train", aptos_train),
+        ("APTOS Val", aptos_val),
+        ("IDRiD Train", idrid_train),
+        ("IDRiD Test", idrid_test),
+    ]
+    if idrid_seg is not None:
+        cohort_list.append(("IDRiD Segmentation", idrid_seg))
+
+    for cohort_name, df_cohort in cohort_list:
+        if df_cohort is not None and len(df_cohort) > 0:
+            ids_list = _extract_ids(df_cohort)
+            if len(ids_list) != len(set(ids_list)):
+                has_failure = True
+                dups = [item for item, count in collections.Counter(ids_list).items() if count > 1]
+                checks.append({
+                    "name": f"{cohort_name} Uniqueness",
+                    "target": f"{cohort_name} Cohort",
+                    "status": "FAILED",
+                    "details": f"Duplicate image identities detected in {cohort_name}: {dups[:5]} ({len(dups)} duplicates).",
+                })
+            else:
+                checks.append({
+                    "name": f"{cohort_name} Uniqueness",
+                    "target": f"{cohort_name} Cohort",
+                    "status": "PASSED",
+                    "details": f"All {len(ids_list)} image identities in {cohort_name} are unique.",
+                })
+
+    # Check 1: APTOS Train vs Val Split Disjointness & Sample Count
     if len(aptos_train) > 0 and len(aptos_val) > 0:
-        tr_ids = {Path(str(x)).stem for x in aptos_train["image_id"]}
-        va_ids = {Path(str(x)).stem for x in aptos_val["image_id"]}
+        tr_ids = set(_extract_ids(aptos_train))
+        va_ids = set(_extract_ids(aptos_val))
         tv_overlap = tr_ids.intersection(va_ids)
         if tv_overlap:
             has_failure = True
@@ -416,22 +501,29 @@ def verify_splits_leakage(
                 "details": f"APTOS Train ({len(tr_ids)}) and Val ({len(va_ids)}) splits are 100% disjoint.",
             })
 
-        # Check 2: APTOS Sample Conservation
         tot_aptos = len(tr_ids) + len(va_ids)
-        if tot_aptos == 3662:
-            checks.append({
-                "name": "APTOS Sample Conservation",
-                "target": "Total APTOS Cohort (N=3,662)",
-                "status": "PASSED",
-                "details": f"Sample count conserved: {len(tr_ids)} train + {len(va_ids)} val = 3,662.",
-            })
+        if validation_mode == "strict":
+            if tot_aptos == 3662:
+                checks.append({
+                    "name": "APTOS Sample Conservation",
+                    "target": "Total APTOS Cohort (N=3,662)",
+                    "status": "PASSED",
+                    "details": f"Sample count conserved: {len(tr_ids)} train + {len(va_ids)} val = 3,662.",
+                })
+            else:
+                has_failure = True
+                checks.append({
+                    "name": "APTOS Sample Conservation",
+                    "target": "Total APTOS Cohort (N=3,662)",
+                    "status": "FAILED",
+                    "details": f"APTOS count mismatch: {tot_aptos} found vs 3,662 expected.",
+                })
         else:
-            has_failure = True
             checks.append({
                 "name": "APTOS Sample Conservation",
-                "target": "Total APTOS Cohort (N=3,662)",
-                "status": "FAILED",
-                "details": f"APTOS count mismatch: {tot_aptos} found vs 3,662 expected.",
+                "target": f"Total APTOS Cohort (Test Mode: N={tot_aptos})",
+                "status": "PASSED",
+                "details": f"Test mode: APTOS sample count {tot_aptos} accepted for test fixture.",
             })
     else:
         checks.append({
@@ -447,18 +539,10 @@ def verify_splits_leakage(
             "details": "APTOS sample count check skipped (executed in --idrid-only mode).",
         })
 
-    # Check 3: IDRiD Train vs Test Cohort Image-Identity Isolation
+    # Check 2: IDRiD Train vs Test Cohort Image-Identity Isolation
     if len(idrid_train) > 0 and len(idrid_test) > 0:
-        idrid_tr_ids = set()
-        for c in ["image_id", "original_id"]:
-            if c in idrid_train.columns:
-                idrid_tr_ids.update(Path(str(x)).stem for x in idrid_train[c].dropna())
-
-        idrid_te_ids = set()
-        for c in ["image_id", "original_id"]:
-            if c in idrid_test.columns:
-                idrid_te_ids.update(Path(str(x)).stem for x in idrid_test[c].dropna())
-
+        idrid_tr_ids = set(_extract_ids(idrid_train))
+        idrid_te_ids = set(_extract_ids(idrid_test))
         idrid_overlap = idrid_tr_ids.intersection(idrid_te_ids)
         if idrid_overlap:
             has_failure = True
@@ -473,7 +557,7 @@ def verify_splits_leakage(
                 "name": "IDRiD Cohort Isolation",
                 "target": "IDRiD Train vs Test",
                 "status": "PASSED",
-                "details": f"IDRiD Train ({len(idrid_train)}) and Test ({len(idrid_test)}) cohorts are 100% disjoint (0 overlapping image identities).",
+                "details": f"IDRiD Train ({len(idrid_tr_ids)}) and Test ({len(idrid_te_ids)}) cohorts are 100% disjoint (0 overlapping image identities).",
             })
     else:
         checks.append({
@@ -483,28 +567,103 @@ def verify_splits_leakage(
             "details": "IDRiD cohort isolation check skipped (insufficient records).",
         })
 
-    # Check 4: IDRiD Test Set Integrity
-    if len(idrid_test) > 0:
-        if len(idrid_test) == 103:
+    # Check 3: IDRiD Training Set Count
+    if len(idrid_train) > 0:
+        if validation_mode == "strict":
+            if len(idrid_train) == 413:
+                checks.append({
+                    "name": "IDRiD Training Set Integrity",
+                    "target": "IDRiD Grading Training Set (N=413)",
+                    "status": "PASSED",
+                    "details": "IDRiD grading training set preserved intact: exactly 413 images.",
+                })
+            else:
+                has_failure = True
+                checks.append({
+                    "name": "IDRiD Training Set Integrity",
+                    "target": "IDRiD Grading Training Set (N=413)",
+                    "status": "FAILED",
+                    "details": f"IDRiD training count mismatch: {len(idrid_train)} found vs 413 expected.",
+                })
+        else:
             checks.append({
-                "name": "IDRiD Test Set Integrity",
-                "target": "IDRiD External Test Benchmark",
+                "name": "IDRiD Training Set Integrity",
+                "target": f"IDRiD Grading Training Set (Test Mode: N={len(idrid_train)})",
                 "status": "PASSED",
-                "details": "IDRiD external test set preserved intact: exactly 103 images.",
+                "details": f"Test mode: IDRiD training count {len(idrid_train)} accepted for test fixture.",
             })
+    else:
+        checks.append({
+            "name": "IDRiD Training Set Integrity",
+            "target": "IDRiD Grading Training Set (N=413)",
+            "status": "SKIPPED",
+            "details": "IDRiD training set check skipped (0 images).",
+        })
+
+    # Check 4: IDRiD Test Set Count
+    if len(idrid_test) > 0:
+        if validation_mode == "strict":
+            if len(idrid_test) == 103:
+                checks.append({
+                    "name": "IDRiD Test Set Integrity",
+                    "target": "IDRiD External Test Benchmark (N=103)",
+                    "status": "PASSED",
+                    "details": "IDRiD external test set preserved intact: exactly 103 images.",
+                })
+            else:
+                has_failure = True
+                checks.append({
+                    "name": "IDRiD Test Set Integrity",
+                    "target": "IDRiD External Test Benchmark (N=103)",
+                    "status": "FAILED",
+                    "details": f"IDRiD test count mismatch: {len(idrid_test)} found vs 103 expected.",
+                })
         else:
             checks.append({
                 "name": "IDRiD Test Set Integrity",
-                "target": "IDRiD External Test Benchmark",
+                "target": f"IDRiD External Test Benchmark (Test Mode: N={len(idrid_test)})",
                 "status": "PASSED",
-                "details": f"IDRiD external test set contains {len(idrid_test)} images.",
+                "details": f"Test mode: IDRiD test count {len(idrid_test)} accepted for test fixture.",
             })
     else:
         checks.append({
             "name": "IDRiD Test Set Integrity",
-            "target": "IDRiD External Test Benchmark",
+            "target": "IDRiD External Test Benchmark (N=103)",
             "status": "SKIPPED",
             "details": "IDRiD test set check skipped (0 images).",
+        })
+
+    # Check 5: IDRiD Segmentation Set Count
+    if idrid_seg is not None and len(idrid_seg) > 0:
+        if validation_mode == "strict":
+            if len(idrid_seg) == 81:
+                checks.append({
+                    "name": "IDRiD Segmentation Set Integrity",
+                    "target": "IDRiD Segmentation Dataset (N=81)",
+                    "status": "PASSED",
+                    "details": "IDRiD segmentation set preserved intact: exactly 81 images.",
+                })
+            else:
+                has_failure = True
+                checks.append({
+                    "name": "IDRiD Segmentation Set Integrity",
+                    "target": "IDRiD Segmentation Dataset (N=81)",
+                    "status": "FAILED",
+                    "details": f"IDRiD segmentation count mismatch: {len(idrid_seg)} found vs 81 expected.",
+                })
+        else:
+            checks.append({
+                "name": "IDRiD Segmentation Set Integrity",
+                "target": f"IDRiD Segmentation Dataset (Test Mode: N={len(idrid_seg)})",
+                "status": "PASSED",
+                "details": f"Test mode: IDRiD segmentation count {len(idrid_seg)} accepted for test fixture.",
+            })
+    elif idrid_seg is not None:
+        checks.append({
+            "name": "IDRiD Segmentation Set Integrity",
+            "target": "IDRiD Segmentation Dataset (N=81)",
+            "status": "SKIPPED",
+            "details": "IDRiD segmentation set check skipped (0 images).",
         })
 
     # Overall Summary Status
@@ -513,8 +672,10 @@ def verify_splits_leakage(
         overall_status = "FAILED ⚠️"
     elif all(s == "PASSED" for s in all_statuses):
         overall_status = "PASSED (Zero Leakage) ✅"
+    elif any(s == "SKIPPED" for s in all_statuses) and not any(s == "FAILED" for s in all_statuses):
+        overall_status = "PARTIALLY EVALUATED (IDRiD Isolation & Counts: PASSED ✅; APTOS: SKIPPED ⏭️)"
     else:
-        overall_status = "PARTIALLY EVALUATED (IDRiD Isolation: PASSED ✅; APTOS: SKIPPED ⏭️)"
+        overall_status = "PASSED (Zero Leakage) ✅"
 
     return {
         "overall_status": overall_status,
@@ -556,10 +717,6 @@ def generate_report(
         f"- **External Training Cohort (IDRiD):** {len(idrid_train)} images (Kept separate; not used for primary training)",
         f"- **Localization Benchmark (IDRiD):** {len(idrid_seg)} images (100% UNSEEN by primary model)",
         "",
-        "## 2. Primary Classification Backbone: APTOS 2019 Split Balance",
-        "",
-        "| ICDR Grade | Clinical Diagnosis | Train Split (80%) | Val Split (20%) | Total Images | Train % | Val % |",
-        "| :---: | :--- | :---: | :---: | :---: | :---: | :---: |",
     ]
 
     labels_map = {
@@ -707,6 +864,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Preprocess only IDRiD grading cohorts and segmentation masks without requiring APTOS raw data.",
     )
     parser.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Explicitly overwrite and regenerate all processed images, masks, composite masks, and FOV masks.",
+    )
+    parser.add_argument(
+        "--validation-mode",
+        choices=["strict", "test"],
+        default="strict",
+        help="Validation mode for dataset sample counts: 'strict' enforces exact counts (IDRiD: 413, 103, 81; APTOS: 3662); 'test' allows small fixtures for unit tests.",
+    )
+    parser.add_argument(
         "--output-report",
         type=Path,
         default=PROJECT_ROOT / "reports" / "preprocessing_report.md",
@@ -721,7 +889,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
 
-    logging.info(f"Starting Phase 2 preprocessing (size={args.size}, workers={args.workers}, dry_run={args.dry_run}, idrid_only={args.idrid_only})...")
+    logging.info(
+        f"Starting Phase 2 preprocessing (size={args.size}, workers={args.workers}, "
+        f"dry_run={args.dry_run}, idrid_only={args.idrid_only}, force_reprocess={args.force_reprocess}, "
+        f"validation_mode={args.validation_mode})..."
+    )
     config = load_config(args.config)
     processed_dir = PROJECT_ROOT / config.get("dataset", {}).get("processed_dir", "data/processed")
     target_size = (args.size, args.size)
@@ -775,6 +947,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             target_size=target_size,
             workers=args.workers,
             dry_run=args.dry_run,
+            force_reprocess=args.force_reprocess,
         )
 
     else:
@@ -805,6 +978,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             seed=seed,
             workers=args.workers,
             dry_run=args.dry_run,
+            force_reprocess=args.force_reprocess,
         )
 
         # 2. IDRiD Preprocessing
@@ -814,10 +988,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             target_size=target_size,
             workers=args.workers,
             dry_run=args.dry_run,
+            force_reprocess=args.force_reprocess,
         )
 
     # 3. Strict Zero-Leakage & Integrity Verification
-    leakage_info = verify_splits_leakage(aptos_train, aptos_val, idrid_train, idrid_test)
+    leakage_info = verify_splits_leakage(
+        aptos_train,
+        aptos_val,
+        idrid_train,
+        idrid_test,
+        idrid_seg=idrid_seg,
+        validation_mode=args.validation_mode,
+    )
 
     # 4. Generate Report
     report_path = args.output_report

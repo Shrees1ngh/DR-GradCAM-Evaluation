@@ -112,6 +112,14 @@ def load_cohort_and_grade_mapping(
 ) -> Tuple[Dict[str, str], Dict[str, Optional[int]]]:
     """Load pre-computed cross-match data and verified disease grades for IDRiD segmentation images.
 
+    Strict Requirements:
+    1. matches_json_path must exist.
+    2. Official IDRiD training grading labels must be present and non-empty.
+    3. Official IDRiD testing grading labels must be present and non-empty.
+    4. All 57 training-matched images must receive valid integer grades in range 0–4.
+    5. All 3 supplementary test images must receive valid integer grades in range 0–4.
+    6. All 21 unique images must be strictly assigned true_grade = None.
+
     Returns:
         cohort_map: Mapping from segmentation image stem (e.g. 'IDRiD_01') to cohort origin string.
         grade_map: Mapping from segmentation image stem to verified ground-truth grade:
@@ -123,7 +131,11 @@ def load_cohort_and_grade_mapping(
     grade_map: Dict[str, Optional[int]] = {}
 
     if not matches_json_path.exists():
-        return cohort_map, grade_map
+        alt_path = PROJECT_ROOT / "reports" / "idrid_seg_grading_matches.json"
+        if alt_path.exists():
+            matches_json_path = alt_path
+        else:
+            raise FileNotFoundError(f"Match mapping JSON file not found at: {matches_json_path}")
 
     with open(matches_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -150,16 +162,28 @@ def load_cohort_and_grade_mapping(
         if p.exists():
             try:
                 df = pd.read_csv(p)
+                if df.empty:
+                    continue
                 img_col = next((c for c in ["image_id", "Image name", "original_id"] if c in df), None)
                 grade_col = next((c for c in ["grade", "Retinopathy grade"] if c in df), None)
                 if img_col and grade_col:
                     for _, row in df.iterrows():
                         if pd.notna(row[grade_col]):
                             stem = Path(str(row[img_col])).stem
-                            training_labels[stem] = int(row[grade_col])
-                    break
+                            g_val = int(row[grade_col])
+                            training_labels[stem] = g_val
+                            if "original_id" in row and pd.notna(row["original_id"]):
+                                training_labels[Path(str(row["original_id"])).stem] = g_val
+                    if training_labels:
+                        break
             except Exception as exc:
                 logging.warning(f"Could not load train labels from {p}: {exc}")
+
+    if not training_labels:
+        raise ValueError(
+            f"Official IDRiD training grading labels are missing or empty. "
+            f"Searched paths: {[str(p) for p in train_search_paths]}"
+        )
 
     # Load verified test labels for the 3 supplementary test-matched images
     test_labels: Dict[str, int] = {}
@@ -175,6 +199,8 @@ def load_cohort_and_grade_mapping(
         if p.exists():
             try:
                 df = pd.read_csv(p)
+                if df.empty:
+                    continue
                 img_col = next((c for c in ["image_id", "Image name", "original_id"] if c in df), None)
                 grade_col = next((c for c in ["grade", "Retinopathy grade"] if c in df), None)
                 if img_col and grade_col:
@@ -185,9 +211,16 @@ def load_cohort_and_grade_mapping(
                             test_labels[stem] = g_val
                             if "original_id" in row and pd.notna(row["original_id"]):
                                 test_labels[Path(str(row["original_id"])).stem] = g_val
-                    break
+                    if test_labels:
+                        break
             except Exception as exc:
                 logging.warning(f"Could not load test labels from {p}: {exc}")
+
+    if not test_labels:
+        raise ValueError(
+            f"Official IDRiD testing grading labels are missing or empty. "
+            f"Searched paths: {[str(p) for p in test_search_paths]}"
+        )
 
     test_aliases = {
         "IDRiD_091": "IDRiD_478", "IDRiD_088": "IDRiD_470", "IDRiD_089": "IDRiD_471",
@@ -206,27 +239,62 @@ def load_cohort_and_grade_mapping(
             target_stem = Path(target_img).stem
 
             if split == "Train":
-                if training_labels:
-                    if target_stem in training_labels:
-                        grade_map[seg_stem] = int(training_labels[target_stem])
-                    else:
-                        raise ValueError(
-                            f"Expected ground-truth training grade missing for matched segmentation image "
-                            f"'{seg_stem}' (target: '{target_stem}'). All 57 training-matched images must have valid grades."
-                        )
+                if target_stem in training_labels:
+                    g_val = int(training_labels[target_stem])
+                else:
+                    raise ValueError(
+                        f"Expected ground-truth training grade missing for matched segmentation image "
+                        f"'{seg_stem}' (target: '{target_stem}'). All 57 training-matched images must have valid grades."
+                    )
+                if not (0 <= g_val <= 4):
+                    raise ValueError(
+                        f"Invalid grade {g_val} for training-matched image '{seg_stem}'. Must be in range 0–4."
+                    )
+                grade_map[seg_stem] = g_val
+
             elif split == "Test":
-                if test_labels:
-                    if target_stem in test_labels:
-                        grade_map[seg_stem] = int(test_labels[target_stem])
-                    elif test_aliases.get(target_stem) in test_labels:
-                        grade_map[seg_stem] = int(test_labels[test_aliases[target_stem]])
-                    else:
-                        raise ValueError(
-                            f"Expected ground-truth test grade missing for supplementary segmentation image "
-                            f"'{seg_stem}' (target: '{target_stem}'). All 3 test-matched images must have valid grades."
-                        )
+                if target_stem in test_labels:
+                    g_val = int(test_labels[target_stem])
+                elif test_aliases.get(target_stem) in test_labels:
+                    g_val = int(test_labels[test_aliases[target_stem]])
+                else:
+                    raise ValueError(
+                        f"Expected ground-truth test grade missing for supplementary segmentation image "
+                        f"'{seg_stem}' (target: '{target_stem}'). All 3 test-matched images must have valid grades."
+                    )
+                if not (0 <= g_val <= 4):
+                    raise ValueError(
+                        f"Invalid grade {g_val} for test-matched image '{seg_stem}'. Must be in range 0–4."
+                    )
+                grade_map[seg_stem] = g_val
         else:
             grade_map[seg_stem] = None
+
+    # Assertions on completeness and correctness:
+    matched_train_ids = data.get("matched_train_ids", [])
+    matched_test_ids = data.get("matched_test_ids", [])
+    unmatched_ids = data.get("unmatched_ids", [])
+
+    for seg_id in matched_train_ids:
+        s = Path(seg_id).stem
+        if s not in grade_map or grade_map[s] is None or not (0 <= grade_map[s] <= 4):
+            raise ValueError(
+                f"Matched training image '{s}' does not have a valid grade in 0–4 (got: {grade_map.get(s)})."
+            )
+
+    for seg_id in matched_test_ids:
+        s = Path(seg_id).stem
+        if s not in grade_map or grade_map[s] is None or not (0 <= grade_map[s] <= 4):
+            raise ValueError(
+                f"Supplementary test image '{s}' does not have a valid grade in 0–4 (got: {grade_map.get(s)})."
+            )
+
+    for seg_id in unmatched_ids:
+        s = Path(seg_id).stem
+        if grade_map.get(s) is not None:
+            raise ValueError(
+                f"Unique segmentation image '{s}' must have grade=None, but got: {grade_map.get(s)}."
+            )
 
     return cohort_map, grade_map
 
@@ -471,7 +539,7 @@ def main() -> int:
     parser.add_argument(
         "--matches-json",
         type=Path,
-        default=PROJECT_ROOT / "reports" / "idrid_seg_grading_matches.json",
+        default=PROJECT_ROOT / "data" / "idrid_seg_grading_matches.json",
         help="Path to IDRiD segmentation-grading cross-matches JSON.",
     )
     parser.add_argument(
@@ -661,6 +729,14 @@ def main() -> int:
             }
 
             img_stem = Path(str(row["image_id"])).stem
+            if img_stem in cohort_overlap_map and "cohort_origin" in row and pd.notna(row["cohort_origin"]):
+                manifest_cohort = str(row["cohort_origin"])
+                expected_cohort = cohort_overlap_map[img_stem]
+                if manifest_cohort != expected_cohort:
+                    raise ValueError(
+                        f"Cohort origin mismatch for image '{img_stem}': "
+                        f"manifest specifies '{manifest_cohort}', but match mapping specifies '{expected_cohort}'."
+                    )
             cohort_origin = str(row.get("cohort_origin", cohort_overlap_map.get(img_stem, "idrid_seg_unique")))
 
             # Assign verified grade:

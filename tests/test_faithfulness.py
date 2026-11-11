@@ -363,16 +363,42 @@ def test_fov_restricted_salient_and_random_mask_exact_parity():
         assert np.all(rand_mask[outside_fov] == 0)
 
 
-def test_load_cohort_and_grade_mapping_idrid_matches():
+def test_load_cohort_and_grade_mapping_idrid_matches(tmp_path: Path):
     """Verify load_cohort_and_grade_mapping correctly categorizes 57 train, 3 test, 21 unique."""
     from scripts.evaluate_faithfulness import load_cohort_and_grade_mapping
     from pathlib import Path
+    import json
+    import pandas as pd
 
-    matches_file = Path("reports/idrid_seg_grading_matches.json")
+    matches_file = Path("data/idrid_seg_grading_matches.json")
     if not matches_file.exists():
-        pytest.skip("reports/idrid_seg_grading_matches.json not found")
+        matches_file = Path("reports/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        pytest.skip("idrid_seg_grading_matches.json not found")
 
-    cohort_map, grade_map = load_cohort_and_grade_mapping(matches_file)
+    with open(matches_file, "r", encoding="utf-8") as f:
+        matches_data = json.load(f)
+
+    # Build complete mock labels
+    train_records = [
+        {"image_id": Path(matches_data["all_details"][fn]["target_image"]).stem, "grade": 2}
+        for fn in matches_data.get("matched_train_ids", [])
+    ]
+    test_records = [
+        {"image_id": Path(matches_data["all_details"][fn]["target_image"]).stem, "grade": 3}
+        for fn in matches_data.get("matched_test_ids", [])
+    ]
+
+    mock_tr = tmp_path / "tr.csv"
+    mock_te = tmp_path / "te.csv"
+    pd.DataFrame(train_records).to_csv(mock_tr, index=False)
+    pd.DataFrame(test_records).to_csv(mock_te, index=False)
+
+    cohort_map, grade_map = load_cohort_and_grade_mapping(
+        matches_file,
+        train_manifest_path=mock_tr,
+        test_manifest_path=mock_te,
+    )
 
     train_cohort = [k for k, v in cohort_map.items() if v == "idrid_grading_train_cohort"]
     test_cohort = [k for k, v in cohort_map.items() if v == "idrid_grading_test_cohort"]
@@ -386,6 +412,76 @@ def test_load_cohort_and_grade_mapping_idrid_matches():
     # The 21 unique images must strictly have grade None (unavailable, never invented)
     for k in unique_cohort:
         assert grade_map[k] is None
+
+
+def test_load_cohort_and_grade_mapping_missing_labels_raises_error(tmp_path: Path):
+    """Verify that missing or empty label files raise ValueError immediately."""
+    from scripts.evaluate_faithfulness import load_cohort_and_grade_mapping
+    from pathlib import Path
+
+    matches_file = Path("data/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        matches_file = Path("reports/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        pytest.skip("idrid_seg_grading_matches.json not found")
+
+    # 1. Missing label files completely
+    nonexistent = tmp_path / "nonexistent.csv"
+    with pytest.raises(ValueError, match="Official IDRiD training grading labels are missing or empty"):
+        load_cohort_and_grade_mapping(
+            matches_file,
+            train_manifest_path=nonexistent,
+            test_manifest_path=nonexistent,
+        )
+
+    # 2. Empty label DataFrame
+    empty_csv = tmp_path / "empty.csv"
+    empty_csv.write_text("image_id,grade\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Official IDRiD training grading labels are missing or empty"):
+        load_cohort_and_grade_mapping(
+            matches_file,
+            train_manifest_path=empty_csv,
+            test_manifest_path=empty_csv,
+        )
+
+
+def test_load_cohort_and_grade_mapping_invalid_grade_range_raises_error(tmp_path: Path):
+    """Verify that grades outside range 0-4 raise ValueError."""
+    import json
+    import pandas as pd
+    from scripts.evaluate_faithfulness import load_cohort_and_grade_mapping
+    from pathlib import Path
+
+    matches_file = Path("data/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        matches_file = Path("reports/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        pytest.skip("idrid_seg_grading_matches.json not found")
+
+    with open(matches_file, "r", encoding="utf-8") as f:
+        matches_data = json.load(f)
+
+    # Invalid grade 5 (outside 0-4)
+    train_records = [
+        {"image_id": Path(matches_data["all_details"][fn]["target_image"]).stem, "grade": 5 if i == 0 else 2}
+        for i, fn in enumerate(matches_data.get("matched_train_ids", []))
+    ]
+    test_records = [
+        {"image_id": Path(matches_data["all_details"][fn]["target_image"]).stem, "grade": 3}
+        for fn in matches_data.get("matched_test_ids", [])
+    ]
+
+    mock_tr = tmp_path / "tr_invalid.csv"
+    mock_te = tmp_path / "te.csv"
+    pd.DataFrame(train_records).to_csv(mock_tr, index=False)
+    pd.DataFrame(test_records).to_csv(mock_te, index=False)
+
+    with pytest.raises(ValueError, match="Invalid grade 5"):
+        load_cohort_and_grade_mapping(
+            matches_file,
+            train_manifest_path=mock_tr,
+            test_manifest_path=mock_te,
+        )
 
 
 def test_grade_unavailable_never_substituted_by_prediction():

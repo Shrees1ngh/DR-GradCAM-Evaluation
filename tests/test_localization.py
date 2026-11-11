@@ -495,4 +495,66 @@ def test_cohort_and_grade_stratification_exact_counts():
     assert summary["grade_distribution"]["unavailable"] == 21
 
 
+def test_localization_load_cohort_and_grade_mapping_strict(tmp_path: pytest.TempPathFactory):
+    """Verify scripts.evaluate_localization.load_cohort_and_grade_mapping strictly validates inputs."""
+    import json
+    from pathlib import Path
+    import pandas as pd
+    from scripts.evaluate_localization import load_cohort_and_grade_mapping
+
+    matches_file = Path("data/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        matches_file = Path("reports/idrid_seg_grading_matches.json")
+    if not matches_file.exists():
+        pytest.skip("idrid_seg_grading_matches.json not found")
+
+    with open(matches_file, "r", encoding="utf-8") as f:
+        matches_data = json.load(f)
+
+    # 1. Missing labels raises ValueError
+    nonexistent = tmp_path / "nonexistent.csv"
+    with pytest.raises(ValueError, match="Official IDRiD training grading labels are missing or empty"):
+        load_cohort_and_grade_mapping(
+            matches_file,
+            train_manifest_path=nonexistent,
+            test_manifest_path=nonexistent,
+        )
+
+    # 2. Valid mock labels load all 81 images correctly
+    train_records = [
+        {"image_id": Path(matches_data["all_details"][fn]["target_image"]).stem, "grade": 1}
+        for fn in matches_data.get("matched_train_ids", [])
+    ]
+    test_records = [
+        {"image_id": Path(matches_data["all_details"][fn]["target_image"]).stem, "grade": 2}
+        for fn in matches_data.get("matched_test_ids", [])
+    ]
+
+    mock_tr = tmp_path / "tr_loc.csv"
+    mock_te = tmp_path / "te_loc.csv"
+    pd.DataFrame(train_records).to_csv(mock_tr, index=False)
+    pd.DataFrame(test_records).to_csv(mock_te, index=False)
+
+    cohort_map, grade_map = load_cohort_and_grade_mapping(
+        matches_file,
+        train_manifest_path=mock_tr,
+        test_manifest_path=mock_te,
+    )
+    assert len(cohort_map) == 81
+    assert len(grade_map) == 81
+
+    # 57 train matched have grade 1
+    for fn in matches_data["matched_train_ids"]:
+        assert grade_map[Path(fn).stem] == 1
+
+    # 3 test matched have grade 2
+    for fn in matches_data["matched_test_ids"]:
+        assert grade_map[Path(fn).stem] == 2
+
+    # 21 unique have None
+    for fn in matches_data["unmatched_ids"]:
+        assert grade_map[Path(fn).stem] is None
+
+
+
 

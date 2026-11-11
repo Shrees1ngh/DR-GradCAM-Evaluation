@@ -35,21 +35,29 @@ Before executing genuine inference, ensure that:
 If `data/processed/` has not yet been populated, run the deterministic preprocessor using the `--idrid-only` flag (recommended for Colab and inference environments where IDRiD images and the pre-trained APTOS checkpoint are provided):
 
 ```bash
-python scripts/preprocess_data.py --size 512 --idrid-only
+python scripts/preprocess_data.py --size 512 --idrid-only --validation-mode strict
+```
+
+To explicitly force re-generation and overwriting of all processed images, masks, and FOV masks:
+```bash
+python scripts/preprocess_data.py --size 512 --idrid-only --force-reprocess --validation-mode strict
 ```
 
 > [!NOTE]
 > The `--idrid-only` flag allows IDRiD grading cohorts (413 train, 103 test) and segmentation masks (81 images across 5 lesion types) to be fully preprocessed and aligned without requiring raw APTOS 2019 data. The existing APTOS-trained checkpoint (`best_model_qwk.pth`) remains frozen and untouched.
+> Sample count validation strictly verifies: 413 train, 103 test, 81 segmentation images, and cohort uniqueness.
 
-### Preprocessing Geometry Guarantees:
+### Preprocessing Geometry & Quality Control Guarantees:
 - **FOV Cropping:** `crop_to_retinal_fov` detects circular retinal boundaries in the green channel and excises empty horizontal sensor margins ($1500+$ px on IDRiD's $4288 \times 2848$ frames).
 - **Aspect Ratio:** The cropped retina is approximately square ($1.01:1$).
 - **Actual Model Letterbox Padding:** Minimal ($\le 3\%$), unlike the uncropped native sensor padding ($33.59\%$).
 - **Active Retinal Tissue:** Covers $\sim 75\%$ of the $512 \times 512$ canvas (with $\sim 25\%$ representing the four natural corners outside the circular optical field).
+- **Persistent FOV Masks:** Generated directly from each processed fundus image, verified binary {0, 1}, and zeroed out on padding margins.
+- **FOV Quality Control Report:** `reports/fov_qc_report.csv` and `reports/fov_qc_report.md` validate active area ratio, circularity, and flag anomalies (`EMPTY_FOV`, `UNUSUALLY_SMALL`, `UNUSUALLY_LARGE`, `PADDING_LEAK`).
 - **Manifests Generated:**
   - `data/processed/idrid/external_train.csv` (413 records)
   - `data/processed/idrid/external_test.csv` (103 records — strictly held out)
-  - `data/processed/idrid/segmentation_manifest.csv` (81 records)
+  - `data/processed/idrid/segmentation_manifest.csv` (81 records: 57 train-matched, 3 test-matched, 21 unique)
 
 ---
 

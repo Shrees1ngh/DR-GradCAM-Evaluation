@@ -1,0 +1,583 @@
+{
+  "summary": {
+    "total_seg": 81,
+    "matched_train": 57,
+    "matched_test": 3,
+    "unmatched": 21
+  },
+  "matched_train_ids": [
+    "IDRiD_01.jpg",
+    "IDRiD_02.jpg",
+    "IDRiD_03.jpg",
+    "IDRiD_05.jpg",
+    "IDRiD_06.jpg",
+    "IDRiD_07.jpg",
+    "IDRiD_08.jpg",
+    "IDRiD_10.jpg",
+    "IDRiD_13.jpg",
+    "IDRiD_14.jpg",
+    "IDRiD_15.jpg",
+    "IDRiD_16.jpg",
+    "IDRiD_17.jpg",
+    "IDRiD_18.jpg",
+    "IDRiD_19.jpg",
+    "IDRiD_20.jpg",
+    "IDRiD_21.jpg",
+    "IDRiD_23.jpg",
+    "IDRiD_24.jpg",
+    "IDRiD_27.jpg",
+    "IDRiD_28.jpg",
+    "IDRiD_29.jpg",
+    "IDRiD_33.jpg",
+    "IDRiD_34.jpg",
+    "IDRiD_35.jpg",
+    "IDRiD_36.jpg",
+    "IDRiD_37.jpg",
+    "IDRiD_38.jpg",
+    "IDRiD_40.jpg",
+    "IDRiD_41.jpg",
+    "IDRiD_42.jpg",
+    "IDRiD_43.jpg",
+    "IDRiD_44.jpg",
+    "IDRiD_46.jpg",
+    "IDRiD_47.jpg",
+    "IDRiD_48.jpg",
+    "IDRiD_49.jpg",
+    "IDRiD_50.jpg",
+    "IDRiD_51.jpg",
+    "IDRiD_52.jpg",
+    "IDRiD_53.jpg",
+    "IDRiD_54.jpg",
+    "IDRiD_58.jpg",
+    "IDRiD_59.jpg",
+    "IDRiD_62.jpg",
+    "IDRiD_63.jpg",
+    "IDRiD_67.jpg",
+    "IDRiD_69.jpg",
+    "IDRiD_71.jpg",
+    "IDRiD_72.jpg",
+    "IDRiD_73.jpg",
+    "IDRiD_74.jpg",
+    "IDRiD_76.jpg",
+    "IDRiD_77.jpg",
+    "IDRiD_78.jpg",
+    "IDRiD_79.jpg",
+    "IDRiD_81.jpg"
+  ],
+  "matched_test_ids": [
+    "IDRiD_09.jpg",
+    "IDRiD_22.jpg",
+    "IDRiD_31.jpg"
+  ],
+  "unmatched_ids": [
+    "IDRiD_04.jpg",
+    "IDRiD_11.jpg",
+    "IDRiD_12.jpg",
+    "IDRiD_25.jpg",
+    "IDRiD_26.jpg",
+    "IDRiD_30.jpg",
+    "IDRiD_32.jpg",
+    "IDRiD_39.jpg",
+    "IDRiD_45.jpg",
+    "IDRiD_55.jpg",
+    "IDRiD_56.jpg",
+    "IDRiD_57.jpg",
+    "IDRiD_60.jpg",
+    "IDRiD_61.jpg",
+    "IDRiD_64.jpg",
+    "IDRiD_65.jpg",
+    "IDRiD_66.jpg",
+    "IDRiD_68.jpg",
+    "IDRiD_70.jpg",
+    "IDRiD_75.jpg",
+    "IDRiD_80.jpg"
+  ],
+  "all_details": {
+    "IDRiD_01.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_102.jpg",
+      "mae": 0.0
+    },
+    "IDRiD_02.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_366.jpg",
+      "mae": 0.0
+    },
+    "IDRiD_03.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_369.jpg",
+      "mae": 0.0
+    },
+    "IDRiD_04.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 12.501
+    },
+    "IDRiD_05.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_082.jpg",
+      "mae": 0.521
+    },
+    "IDRiD_06.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_196.jpg",
+      "mae": 0.078
+    },
+    "IDRiD_07.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_029.jpg",
+      "mae": 0.553
+    },
+    "IDRiD_08.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_207.jpg",
+      "mae": 0.097
+    },
+    "IDRiD_09.jpg": {
+      "matched": true,
+      "split": "Test",
+      "target_image": "IDRiD_091.jpg",
+      "mae": 0.604
+    },
+    "IDRiD_10.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_224.jpg",
+      "mae": 0.106
+    },
+    "IDRiD_11.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 4.518
+    },
+    "IDRiD_12.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 10.28
+    },
+    "IDRiD_13.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_231.jpg",
+      "mae": 0.11
+    },
+    "IDRiD_14.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_232.jpg",
+      "mae": 0.11
+    },
+    "IDRiD_15.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_236.jpg",
+      "mae": 0.115
+    },
+    "IDRiD_16.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_237.jpg",
+      "mae": 0.109
+    },
+    "IDRiD_17.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_239.jpg",
+      "mae": 0.119
+    },
+    "IDRiD_18.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_132.jpg",
+      "mae": 0.592
+    },
+    "IDRiD_19.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_242.jpg",
+      "mae": 0.092
+    },
+    "IDRiD_20.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_245.jpg",
+      "mae": 0.125
+    },
+    "IDRiD_21.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_246.jpg",
+      "mae": 0.12
+    },
+    "IDRiD_22.jpg": {
+      "matched": true,
+      "split": "Test",
+      "target_image": "IDRiD_088.jpg",
+      "mae": 0.536
+    },
+    "IDRiD_23.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_247.jpg",
+      "mae": 0.091
+    },
+    "IDRiD_24.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_248.jpg",
+      "mae": 0.104
+    },
+    "IDRiD_25.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 5.334
+    },
+    "IDRiD_26.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 3.667
+    },
+    "IDRiD_27.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_254.jpg",
+      "mae": 0.113
+    },
+    "IDRiD_28.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_261.jpg",
+      "mae": 0.121
+    },
+    "IDRiD_29.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_263.jpg",
+      "mae": 0.109
+    },
+    "IDRiD_30.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 5.298
+    },
+    "IDRiD_31.jpg": {
+      "matched": true,
+      "split": "Test",
+      "target_image": "IDRiD_089.jpg",
+      "mae": 0.554
+    },
+    "IDRiD_32.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 5.321
+    },
+    "IDRiD_33.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_272.jpg",
+      "mae": 0.107
+    },
+    "IDRiD_34.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_277.jpg",
+      "mae": 0.115
+    },
+    "IDRiD_35.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_278.jpg",
+      "mae": 0.13
+    },
+    "IDRiD_36.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_280.jpg",
+      "mae": 0.117
+    },
+    "IDRiD_37.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_281.jpg",
+      "mae": 0.12
+    },
+    "IDRiD_38.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_185.jpg",
+      "mae": 0.523
+    },
+    "IDRiD_39.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 2.936
+    },
+    "IDRiD_40.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_282.jpg",
+      "mae": 0.104
+    },
+    "IDRiD_41.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_283.jpg",
+      "mae": 0.113
+    },
+    "IDRiD_42.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_284.jpg",
+      "mae": 0.102
+    },
+    "IDRiD_43.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_294.jpg",
+      "mae": 0.12
+    },
+    "IDRiD_44.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_300.jpg",
+      "mae": 0.106
+    },
+    "IDRiD_45.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 6.848
+    },
+    "IDRiD_46.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_306.jpg",
+      "mae": 0.081
+    },
+    "IDRiD_47.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_064.jpg",
+      "mae": 0.521
+    },
+    "IDRiD_48.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_053.jpg",
+      "mae": 0.556
+    },
+    "IDRiD_49.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_308.jpg",
+      "mae": 0.112
+    },
+    "IDRiD_50.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_048.jpg",
+      "mae": 0.587
+    },
+    "IDRiD_51.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_310.jpg",
+      "mae": 0.077
+    },
+    "IDRiD_52.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_311.jpg",
+      "mae": 0.101
+    },
+    "IDRiD_53.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_012.jpg",
+      "mae": 0.366
+    },
+    "IDRiD_54.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_314.jpg",
+      "mae": 0.103
+    },
+    "IDRiD_55.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 4.912
+    },
+    "IDRiD_56.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 5.92
+    },
+    "IDRiD_57.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 19.264
+    },
+    "IDRiD_58.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_356.jpg",
+      "mae": 0.541
+    },
+    "IDRiD_59.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_128.jpg",
+      "mae": 0.432
+    },
+    "IDRiD_60.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 6.533
+    },
+    "IDRiD_61.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 5.837
+    },
+    "IDRiD_62.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_073.jpg",
+      "mae": 0.479
+    },
+    "IDRiD_63.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_059.jpg",
+      "mae": 0.493
+    },
+    "IDRiD_64.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 6.831
+    },
+    "IDRiD_65.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 17.456
+    },
+    "IDRiD_66.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 11.204
+    },
+    "IDRiD_67.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_027.jpg",
+      "mae": 0.543
+    },
+    "IDRiD_68.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 5.711
+    },
+    "IDRiD_69.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_028.jpg",
+      "mae": 0.583
+    },
+    "IDRiD_70.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 7.801
+    },
+    "IDRiD_71.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_066.jpg",
+      "mae": 0.525
+    },
+    "IDRiD_72.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_328.jpg",
+      "mae": 0.545
+    },
+    "IDRiD_73.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_020.jpg",
+      "mae": 0.483
+    },
+    "IDRiD_74.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_329.jpg",
+      "mae": 0.501
+    },
+    "IDRiD_75.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 6.611
+    },
+    "IDRiD_76.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_313.jpg",
+      "mae": 0.09
+    },
+    "IDRiD_77.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_057.jpg",
+      "mae": 0.47
+    },
+    "IDRiD_78.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_058.jpg",
+      "mae": 0.535
+    },
+    "IDRiD_79.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_309.jpg",
+      "mae": 0.1
+    },
+    "IDRiD_80.jpg": {
+      "matched": false,
+      "split": null,
+      "target_image": null,
+      "mae": 5.812
+    },
+    "IDRiD_81.jpg": {
+      "matched": true,
+      "split": "Train",
+      "target_image": "IDRiD_186.jpg",
+      "mae": 0.463
+    }
+  }
+}

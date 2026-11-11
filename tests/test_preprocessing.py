@@ -314,6 +314,7 @@ def test_preprocess_cli_idrid_only_execution(tmp_path: Path):
     ret = preprocess_main([
         "--config", str(cfg_file),
         "--idrid-only",
+        "--validation-mode", "test",
         "--dry-run",
         "--output-report", str(mock_report),
     ])
@@ -364,26 +365,121 @@ def test_verify_splits_leakage_idrid_only_skipped_and_overlap_detection():
     """Verify verify_splits_leakage distinguishes SKIPPED from PASSED and detects IDRiD overlap."""
     from scripts.preprocess_data import verify_splits_leakage
 
-    # Scenario A: --idrid-only mode (APTOS empty)
+    # Scenario A: --idrid-only mode (APTOS empty) in test validation mode
     empty_aptos = pd.DataFrame()
     idrid_train_clean = pd.DataFrame({"image_id": ["IDRiD_001", "IDRiD_002"], "original_id": ["IDRiD_001", "IDRiD_002"]})
     idrid_test_clean = pd.DataFrame({"image_id": ["IDRiD_414", "IDRiD_415"], "original_id": ["IDRiD_414", "IDRiD_415"]})
 
-    res_partial = verify_splits_leakage(empty_aptos, empty_aptos, idrid_train_clean, idrid_test_clean)
+    res_partial = verify_splits_leakage(
+        empty_aptos, empty_aptos, idrid_train_clean, idrid_test_clean, validation_mode="test"
+    )
     assert res_partial["is_leakage_free"] is True
     assert "PARTIALLY EVALUATED" in res_partial["overall_status"]
     assert "Zero Leakage" not in res_partial["overall_status"]
-    assert res_partial["checks"][0]["status"] == "SKIPPED"
-    assert res_partial["checks"][1]["status"] == "SKIPPED"
-    assert res_partial["checks"][2]["status"] == "PASSED"
+    assert res_partial["checks"][2]["status"] == "SKIPPED"
+    assert res_partial["checks"][3]["status"] == "SKIPPED"
+    assert res_partial["checks"][4]["status"] == "PASSED"
 
     # Scenario B: Critical Leakage between IDRiD Train and Test
     idrid_train_leak = pd.DataFrame({"image_id": ["IDRiD_001", "IDRiD_414"]})
     idrid_test_leak = pd.DataFrame({"image_id": ["IDRiD_414", "IDRiD_415"]})
 
-    res_leak = verify_splits_leakage(empty_aptos, empty_aptos, idrid_train_leak, idrid_test_leak)
+    res_leak = verify_splits_leakage(
+        empty_aptos, empty_aptos, idrid_train_leak, idrid_test_leak, validation_mode="test"
+    )
     assert res_leak["is_leakage_free"] is False
     assert "FAILED" in res_leak["overall_status"]
-    assert res_leak["checks"][2]["status"] == "FAILED"
-    assert "IDRiD_414" in res_leak["checks"][2]["details"]
+    assert any(c["name"] == "IDRiD Cohort Isolation" and c["status"] == "FAILED" for c in res_leak["checks"])
+
+
+def test_verify_splits_leakage_strict_exact_counts():
+    """Verify verify_splits_leakage strictly enforces exact counts in strict mode."""
+    from scripts.preprocess_data import verify_splits_leakage
+
+    # Exactly 413 train, 103 test, 81 seg
+    idrid_train = pd.DataFrame({"image_id": [f"IDRiD_train_{i:03d}" for i in range(413)]})
+    idrid_test = pd.DataFrame({"image_id": [f"IDRiD_test_{i:03d}" for i in range(103)]})
+    idrid_seg = pd.DataFrame({"image_id": [f"IDRiD_seg_{i:02d}" for i in range(81)]})
+
+    # When APTOS is omitted in idrid-only
+    empty_aptos = pd.DataFrame()
+    res = verify_splits_leakage(
+        empty_aptos, empty_aptos, idrid_train, idrid_test, idrid_seg=idrid_seg, validation_mode="strict"
+    )
+    assert res["is_leakage_free"] is True
+    assert "PARTIALLY EVALUATED" in res["overall_status"]
+
+    # When exact count mismatches (e.g. 412 instead of 413)
+    idrid_train_bad = pd.DataFrame({"image_id": [f"IDRiD_train_{i:03d}" for i in range(412)]})
+    res_bad = verify_splits_leakage(
+        empty_aptos, empty_aptos, idrid_train_bad, idrid_test, idrid_seg=idrid_seg, validation_mode="strict"
+    )
+    assert res_bad["is_leakage_free"] is False
+    assert "FAILED" in res_bad["overall_status"]
+    assert any(c["name"] == "IDRiD Training Set Integrity" and c["status"] == "FAILED" for c in res_bad["checks"])
+
+
+def test_verify_splits_leakage_duplicate_ids_detected():
+    """Verify duplicate IDs within a cohort cause immediate validation failure."""
+    from scripts.preprocess_data import verify_splits_leakage
+
+    idrid_train_dup = pd.DataFrame({"image_id": ["IDRiD_01", "IDRiD_01", "IDRiD_02"]})
+    idrid_test = pd.DataFrame({"image_id": ["IDRiD_10", "IDRiD_11"]})
+
+    res = verify_splits_leakage(
+        pd.DataFrame(), pd.DataFrame(), idrid_train_dup, idrid_test, validation_mode="test"
+    )
+    assert res["is_leakage_free"] is False
+    assert "FAILED" in res["overall_status"]
+    assert any("Duplicate image identities detected in IDRiD Train" in c["details"] for c in res["checks"])
+
+
+def test_evaluate_fov_mask_quality():
+    """Verify evaluate_fov_mask_quality detects valid masks and flags anomalies."""
+    from src.preprocessing import evaluate_fov_mask_quality
+
+    img = np.ones((100, 100, 3), dtype=np.uint8) * 128
+    y, x = np.ogrid[:100, :100]
+
+    # 1. Valid circular FOV mask (~70% area ratio)
+    valid_mask = ((y - 50)**2 + (x - 50)**2 <= 47**2).astype(np.uint8)
+    res_valid = evaluate_fov_mask_quality(img, valid_mask)
+    assert res_valid["status"] == "PASSED"
+    assert "VALID" in res_valid["flags"]
+
+    # 2. Empty FOV
+    empty_mask = np.zeros((100, 100), dtype=np.uint8)
+    res_empty = evaluate_fov_mask_quality(img, empty_mask)
+    assert res_empty["status"] == "FAILED"
+    assert "EMPTY_FOV" in res_empty["flags"]
+
+    # 3. Unusually small FOV (< 20%)
+    small_mask = ((y - 50)**2 + (x - 50)**2 <= 10**2).astype(np.uint8)
+    res_small = evaluate_fov_mask_quality(img, small_mask)
+    assert res_small["status"] == "FAILED"
+    assert "UNUSUALLY_SMALL" in res_small["flags"]
+
+    # 4. Padding leak
+    pad_offsets = (10, 10, 10, 10)
+    leak_mask = valid_mask.copy()
+    leak_mask[5, 50] = 1  # Leaks into top pad (top 10 rows)
+    res_leak = evaluate_fov_mask_quality(img, leak_mask, pad_offsets=pad_offsets)
+    assert res_leak["status"] == "FAILED"
+    assert "PADDING_LEAK" in res_leak["flags"]
+
+
+def test_run_fov_quality_control(tmp_path: Path):
+    """Verify run_fov_quality_control generates valid reports in both pending and active modes."""
+    from src.preprocessing import run_fov_quality_control
+
+    # Pending mode (no images on disk)
+    dummy_manifest = pd.DataFrame([{"image_id": "IDRiD_01", "processed_image_path": "nonexistent.jpg"}])
+    csv_pending = tmp_path / "pending_qc.csv"
+    md_pending = tmp_path / "pending_qc.md"
+    res_pend = run_fov_quality_control(
+        dummy_manifest, project_root=tmp_path, output_csv=csv_pending, output_md=md_pending
+    )
+    assert res_pend["status"] == "PENDING"
+    assert csv_pending.exists()
+    assert "Genuine 81-image validation remains pending" in md_pending.read_text(encoding="utf-8")
 
