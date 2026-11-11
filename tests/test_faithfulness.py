@@ -11,6 +11,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+from src.explainability import binarize_heatmap
 from src.faithfulness import (
     aggregate_faithfulness_scores,
     apply_ablation_mask,
@@ -205,6 +206,50 @@ def test_evaluate_progressive_deletion_structure():
     assert "audc_random" in black_eval
     assert "audc_margin" in black_eval
     assert "overall_is_faithful" in black_eval
+
+
+def test_fov_restricted_mask_parity_with_binarize():
+    """Verify bit-exact parity between generate_fov_restricted_salient_mask and binarize_heatmap."""
+    rng = np.random.default_rng(123)
+    cam = rng.random((50, 50), dtype=np.float32)
+    fov = np.zeros((50, 50), dtype=np.uint8)
+    fov[10:40, 10:40] = 1
+
+    mask_f, cnt_f = generate_fov_restricted_salient_mask(cam, valid_fov_mask=fov, fraction=0.15)
+    mask_b = binarize_heatmap(cam, threshold=0.15, method="percentile", fov_mask=fov)
+
+    assert cnt_f == int(np.sum(mask_b))
+    np.testing.assert_array_equal(mask_f, mask_b)
+
+
+def test_evaluate_progressive_deletion_non_informative_heatmap():
+    """Verify non-informative heatmap sets status and avoids deletion on arbitrary pixels."""
+    model = DummyModel()
+    img = np.full((32, 32, 3), 120, dtype=np.uint8)
+    flat_cam = np.full((32, 32), 0.5, dtype=np.float32)
+    fov = np.ones((32, 32), dtype=np.uint8)
+
+    res = evaluate_progressive_deletion(
+        model=model,
+        image_rgb=img,
+        heatmap=flat_cam,
+        target_class=1,
+        device="cpu",
+        image_id="test_flat",
+        true_grade=1,
+        deletion_steps=[0.05, 0.10],
+        fill_strategies=["black"],
+        valid_fov_mask=fov,
+    )
+
+    assert res["heatmap_status"] == "non_informative_heatmap"
+    assert res["is_informative"] is False
+    black_eval = res["evaluations_by_fill"]["black"]
+    assert len(black_eval["steps"]) == 0
+    assert black_eval["mean_deletion_margin"] is None
+    assert black_eval["audc_margin"] is None
+    assert black_eval["normalized_pauc_margin"] is None
+    assert black_eval["overall_is_faithful"] is None
 
 
 # ---------------------------------------------------------------------------

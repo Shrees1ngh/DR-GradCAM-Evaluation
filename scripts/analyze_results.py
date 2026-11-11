@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -51,6 +52,12 @@ import pandas as pd
 import scipy.stats
 
 
+EXPECTED_LOC_STATUS = "GENUINE_LOCALIZATION_EVALUATION_COMPLETE"
+EXPECTED_FAITH_STATUS = "GENUINE_FAITHFULNESS_EVALUATION_COMPLETE"
+SHA256_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+EXPECTED_IDRID_SEG_COUNT = 81
+PRIMARY_COHORT_COUNT = 78
+SUPPLEMENTARY_COHORT_COUNT = 3
 SUPPLEMENTARY_IMAGE_IDS = {"IDRiD_09", "IDRiD_22", "IDRiD_31"}
 ICDR_NAMES = {
     0: "No DR",
@@ -203,6 +210,195 @@ def benjamini_hochberg_fdr(p_values: Sequence[float]) -> List[float]:
     return [p_adj for _, p_adj in adjusted]
 
 
+def audit_and_merge_predictions(
+    loc_df: pd.DataFrame,
+    faith_df: pd.DataFrame,
+    is_simulated: bool = False,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Strictly audit, cross-validate, and merge per-image predictions from Phases 6 and 7.
+
+    Performs:
+    1. Normalization of image IDs (stem and strip).
+    2. Detection and rejection of duplicate IDs within either phase.
+    3. Outer merge audit identifying records present in only one phase.
+    4. For genuine evaluation, validation of all 81 expected IDRiD segmentation images.
+    5. Exact cross-validation of true_grade (including None preservation), cohort_origin,
+       predicted_grade, and target_class across phases.
+    6. Extraction of unified cohort, grade, and heatmap status metadata.
+
+    Args:
+        loc_df: DataFrame of Phase 6 localization predictions.
+        faith_df: DataFrame of Phase 7 faithfulness predictions.
+        is_simulated: Whether running in simulated/software test mode.
+
+    Returns:
+        merged_df: Unified DataFrame with verified matching records.
+        audit_summary: Dictionary containing counts of matched, unmatched, and audited fields.
+    """
+    loc_df = loc_df.copy()
+    faith_df = faith_df.copy()
+
+    # 1. Normalize image IDs
+    loc_df["clean_id"] = loc_df["image_id"].astype(str).apply(lambda x: Path(x).stem.strip())
+    faith_df["clean_id"] = faith_df["image_id"].astype(str).apply(lambda x: Path(x).stem.strip())
+
+    # 2. Duplicate detection
+    if loc_df["clean_id"].duplicated().any():
+        dups = loc_df["clean_id"][loc_df["clean_id"].duplicated()].unique().tolist()
+        raise ValueError(f"Duplicate image IDs detected in localization CSV: {dups}")
+    if faith_df["clean_id"].duplicated().any():
+        dups = faith_df["clean_id"][faith_df["clean_id"].duplicated()].unique().tolist()
+        raise ValueError(f"Duplicate image IDs detected in faithfulness CSV: {dups}")
+
+    # 3. Outer merge audit
+    audit_merge = pd.merge(
+        loc_df,
+        faith_df,
+        on="clean_id",
+        suffixes=("_loc", "_faith"),
+        how="outer",
+        indicator=True,
+    )
+
+    loc_only = audit_merge[audit_merge["_merge"] == "left_only"]["clean_id"].tolist()
+    faith_only = audit_merge[audit_merge["_merge"] == "right_only"]["clean_id"].tolist()
+    both = audit_merge[audit_merge["_merge"] == "both"]["clean_id"].tolist()
+
+    if loc_only or faith_only:
+        raise ValueError(
+            f"Outer merge audit failed: Unmatched image records detected between Phase 6 and Phase 7.\n"
+            f"- Phase 6 only ({len(loc_only)} records): {sorted(loc_only)}\n"
+            f"- Phase 7 only ({len(faith_only)} records): {sorted(faith_only)}\n"
+            "All evaluated images must be present in both Phase 6 and Phase 7 predictions."
+        )
+
+    if not is_simulated:
+        expected_ids = {f"IDRiD_{i:02d}" for i in range(1, EXPECTED_IDRID_SEG_COUNT + 1)}
+        merged_ids = set(both)
+        missing_expected = expected_ids - merged_ids
+        extra_ids = merged_ids - expected_ids
+        if missing_expected or extra_ids or len(both) != EXPECTED_IDRID_SEG_COUNT:
+            raise ValueError(
+                f"Dataset count validation failed for IDRiD segmentation cohort.\n"
+                f"Expected exactly 81 unique segmentation records (78 primary, 3 supplementary).\n"
+                f"Found {len(both)} records.\n"
+                f"- Missing expected IDs ({len(missing_expected)}): {sorted(missing_expected)}\n"
+                f"- Unexpected extra IDs ({len(extra_ids)}): {sorted(extra_ids)}"
+            )
+
+    # 4. Cross-validate matched rows
+    unified_rows = []
+    for _, row in audit_merge.iterrows():
+        cid = row["clean_id"]
+
+        # A. true_grade validation
+        g_loc = row.get("true_grade_loc")
+        if g_loc is None and "true_grade" in row:
+            g_loc = row["true_grade"]
+        g_faith = row.get("true_grade_faith")
+        if g_faith is None and "true_grade" in row:
+            g_faith = row["true_grade"]
+
+        g_loc_na = pd.isna(g_loc) or g_loc is None or str(g_loc).strip().lower() in ("nan", "none", "")
+        g_faith_na = pd.isna(g_faith) or g_faith is None or str(g_faith).strip().lower() in ("nan", "none", "")
+
+        if g_loc_na != g_faith_na:
+            raise ValueError(
+                f"Integrity Gate Failed: true_grade mismatch for image '{cid}': "
+                f"Phase 6 has '{g_loc}', Phase 7 has '{g_faith}'."
+            )
+        if not g_loc_na and not g_faith_na:
+            if int(float(g_loc)) != int(float(g_faith)):
+                raise ValueError(
+                    f"Integrity Gate Failed: true_grade mismatch for image '{cid}': "
+                    f"Phase 6 has {g_loc}, Phase 7 has {g_faith}."
+                )
+            unified_grade = int(float(g_loc))
+        else:
+            unified_grade = None
+
+        # B. cohort_origin validation
+        c_loc = str(row.get("cohort_origin_loc", row.get("cohort_origin", "")) or "").strip()
+        c_faith = str(row.get("cohort_origin_faith", row.get("cohort_origin", "")) or "").strip()
+        if c_loc and c_faith and c_loc != c_faith:
+            raise ValueError(
+                f"Integrity Gate Failed: cohort_origin mismatch for image '{cid}': "
+                f"Phase 6 has '{c_loc}', Phase 7 has '{c_faith}'."
+            )
+        unified_cohort = c_loc or c_faith or "unknown"
+
+        # C. predicted_grade / target_class validation
+        pred_loc = row.get("predicted_grade_loc", row.get("predicted_grade"))
+        pred_faith = row.get("predicted_grade_faith", row.get("predicted_grade"))
+        tgt_faith = row.get("target_class_faith", row.get("target_class"))
+
+        pred_loc_na = pd.isna(pred_loc) or pred_loc is None or str(pred_loc).strip().lower() in ("nan", "none", "")
+        pred_faith_na = pd.isna(pred_faith) or pred_faith is None or str(pred_faith).strip().lower() in ("nan", "none", "")
+        tgt_faith_na = pd.isna(tgt_faith) or tgt_faith is None or str(tgt_faith).strip().lower() in ("nan", "none", "")
+
+        if not pred_loc_na and not pred_faith_na:
+            if int(float(pred_loc)) != int(float(pred_faith)):
+                raise ValueError(
+                    f"Integrity Gate Failed: predicted_grade mismatch for image '{cid}': "
+                    f"Phase 6 predicted {pred_loc}, Phase 7 predicted {pred_faith}."
+                )
+        if not pred_loc_na and not tgt_faith_na:
+            if int(float(pred_loc)) != int(float(tgt_faith)):
+                raise ValueError(
+                    f"Integrity Gate Failed: predicted_grade / target_class mismatch for image '{cid}': "
+                    f"Phase 6 predicted {pred_loc}, Phase 7 explained class {tgt_faith}."
+                )
+
+        unified_pred = int(float(pred_loc)) if not pred_loc_na else (int(float(pred_faith)) if not pred_faith_na else None)
+        unified_tgt = int(float(tgt_faith)) if not tgt_faith_na else unified_pred
+
+        # D. heatmap_status and is_informative
+        stat_loc = str(row.get("heatmap_status_loc", row.get("heatmap_status", "ok"))).strip()
+        stat_faith = str(row.get("heatmap_status_faith", row.get("heatmap_status", "ok"))).strip()
+        is_inf_loc = row.get("is_informative_loc", row.get("is_informative", True))
+        is_inf_faith = row.get("is_informative_faith", row.get("is_informative", True))
+
+        if is_inf_loc is None or pd.isna(is_inf_loc):
+            is_inf_loc = True
+        else:
+            is_inf_loc = bool(is_inf_loc)
+
+        if is_inf_faith is None or pd.isna(is_inf_faith):
+            is_inf_faith = True
+        else:
+            is_inf_faith = bool(is_inf_faith)
+
+        if (
+            stat_loc == "non_informative_heatmap"
+            or stat_faith == "non_informative_heatmap"
+            or not is_inf_loc
+            or not is_inf_faith
+        ):
+            unified_status = "non_informative_heatmap"
+            unified_informative = False
+        else:
+            unified_status = "ok"
+            unified_informative = True
+
+        r_dict = dict(row)
+        r_dict["true_grade"] = unified_grade
+        r_dict["cohort_origin"] = unified_cohort
+        r_dict["predicted_grade"] = unified_pred
+        r_dict["target_class"] = unified_tgt
+        r_dict["heatmap_status"] = unified_status
+        r_dict["is_informative"] = unified_informative
+        unified_rows.append(r_dict)
+
+    merged_df = pd.DataFrame(unified_rows)
+    audit_summary = {
+        "total_matched": len(both),
+        "loc_only": len(loc_only),
+        "faith_only": len(faith_only),
+        "status": "PASSED",
+    }
+    return merged_df, audit_summary
+
+
 def verify_inputs_and_load_data(
     localization_csv: Path,
     faithfulness_csv: Path,
@@ -226,7 +422,6 @@ def verify_inputs_and_load_data(
         is_simulated: Boolean indicating whether inputs were simulated.
         checkpoint_sha256: Verified matching checkpoint hash, if genuine.
     """
-    # Check physical existence of input files
     for p, name in [
         (localization_csv, "localization CSV"),
         (faithfulness_csv, "faithfulness CSV"),
@@ -244,8 +439,8 @@ def verify_inputs_and_load_data(
     with open(faithfulness_json, "r", encoding="utf-8") as f:
         faith_meta = json.load(f)
 
-    loc_status = str(loc_meta.get("status", ""))
-    faith_status = str(faith_meta.get("status", ""))
+    loc_status = str(loc_meta.get("status", "")).strip()
+    faith_status = str(faith_meta.get("status", "")).strip()
 
     is_simulated = (
         "SIMULATED" in loc_status
@@ -254,23 +449,48 @@ def verify_inputs_and_load_data(
         or "simulated" in faithfulness_csv.name.lower()
     )
 
-    if is_simulated and not allow_simulated:
-        raise ValueError(
-            "Integrity Gate Failed: Simulated / Dry-Run evaluation files detected.\n"
-            f"- Localization status: '{loc_status}' ({localization_csv.name})\n"
-            f"- Faithfulness status: '{faith_status}' ({faithfulness_csv.name})\n"
-            "Phase 8 statistical hypothesis testing requires genuine empirical evaluation.\n"
-            "To execute a pipeline software test on simulated data, pass '--allow-simulated'."
-        )
-
-    checkpoint_sha256 = None
-    if not is_simulated:
-        loc_sha = loc_meta.get("checkpoint_sha256")
-        faith_sha = faith_meta.get("checkpoint_sha256")
-
-        if not loc_sha or not faith_sha:
+    if not allow_simulated:
+        if is_simulated:
             raise ValueError(
-                "Integrity Gate Failed: Missing checkpoint_sha256 in evaluation JSON reports."
+                "Integrity Gate Failed: Simulated / Dry-Run evaluation files detected.\n"
+                f"- Localization status: '{loc_status}' ({localization_csv.name})\n"
+                f"- Faithfulness status: '{faith_status}' ({faithfulness_csv.name})\n"
+                "Phase 8 statistical hypothesis testing requires genuine empirical evaluation.\n"
+                "To execute a pipeline software test on simulated data, pass '--allow-simulated'."
+            )
+        if loc_status != EXPECTED_LOC_STATUS:
+            raise ValueError(
+                f"Integrity Gate Failed: Phase 6 report status must be exactly '{EXPECTED_LOC_STATUS}', got '{loc_status}'.\n"
+                "Phase 8 statistical hypothesis testing requires genuine empirical evaluation.\n"
+                "To execute a pipeline software test on simulated data, pass '--allow-simulated'."
+            )
+        if faith_status != EXPECTED_FAITH_STATUS:
+            raise ValueError(
+                f"Integrity Gate Failed: Phase 7 report status must be exactly '{EXPECTED_FAITH_STATUS}', got '{faith_status}'.\n"
+                "Phase 8 statistical hypothesis testing requires genuine empirical evaluation.\n"
+                "To execute a pipeline software test on simulated data, pass '--allow-simulated'."
+            )
+        if loc_meta.get("state_dict_verified") is not True:
+            raise ValueError(
+                "Integrity Gate Failed: Phase 6 report state_dict_verified is not True.\n"
+                "Subprocess evaluation weights must be rigorously verified before statistical analysis."
+            )
+        if faith_meta.get("state_dict_verified") is not True:
+            raise ValueError(
+                "Integrity Gate Failed: Phase 7 report state_dict_verified is not True.\n"
+                "Subprocess evaluation weights must be rigorously verified before statistical analysis."
+            )
+
+        loc_sha = str(loc_meta.get("checkpoint_sha256") or "").strip()
+        faith_sha = str(faith_meta.get("checkpoint_sha256") or "").strip()
+
+        if not SHA256_HEX_PATTERN.match(loc_sha):
+            raise ValueError(
+                f"Integrity Gate Failed: Phase 6 checkpoint_sha256 is not a valid 64-character hexadecimal SHA-256 hash: '{loc_sha}'."
+            )
+        if not SHA256_HEX_PATTERN.match(faith_sha):
+            raise ValueError(
+                f"Integrity Gate Failed: Phase 7 checkpoint_sha256 is not a valid 64-character hexadecimal SHA-256 hash: '{faith_sha}'."
             )
 
         if loc_sha != faith_sha:
@@ -281,36 +501,16 @@ def verify_inputs_and_load_data(
                 "Both phases must be evaluated using the exact same immutable model weights."
             )
         checkpoint_sha256 = loc_sha
+        is_simulated = False
+    else:
+        checkpoint_sha256 = loc_meta.get("checkpoint_sha256") if not is_simulated else None
 
-    # Load and merge CSV predictions
+    # Load and merge CSV predictions with audit
     loc_df = pd.read_csv(localization_csv)
     faith_df = pd.read_csv(faithfulness_csv)
 
-    # Standardize image_id stems
-    loc_df["clean_id"] = loc_df["image_id"].astype(str).apply(lambda x: Path(x).stem)
-    faith_df["clean_id"] = faith_df["image_id"].astype(str).apply(lambda x: Path(x).stem)
-
-    # Check for duplicates
-    if loc_df["clean_id"].duplicated().any():
-        dups = loc_df["clean_id"][loc_df["clean_id"].duplicated()].tolist()
-        raise ValueError(f"Duplicate image IDs detected in localization CSV: {dups}")
-    if faith_df["clean_id"].duplicated().any():
-        dups = faith_df["clean_id"][faith_df["clean_id"].duplicated()].tolist()
-        raise ValueError(f"Duplicate image IDs detected in faithfulness CSV: {dups}")
-
-    # Merge on clean_id
-    merged = pd.merge(
-        loc_df,
-        faith_df,
-        on="clean_id",
-        suffixes=("_loc", "_faith"),
-        how="inner",
-    )
-
-    if len(merged) == 0:
-        raise ValueError("No common image IDs found between localization and faithfulness predictions.")
-
-    return merged, loc_meta, faith_meta, is_simulated, checkpoint_sha256
+    merged_df, _ = audit_and_merge_predictions(loc_df, faith_df, is_simulated=is_simulated)
+    return merged_df, loc_meta, faith_meta, is_simulated, checkpoint_sha256
 
 
 def get_faithfulness_metric_col(df: pd.DataFrame) -> Tuple[str, str]:
@@ -351,33 +551,85 @@ def perform_statistical_analysis(
     """
     faith_col, faith_label = get_faithfulness_metric_col(merged_df)
 
-    # Cohort separation
-    # Flag supplementary cohort (IDRiD_09, 22, 31 or cohort_origin containing 'test_cohort')
-    is_supp = (
-        merged_df["clean_id"].isin(SUPPLEMENTARY_IMAGE_IDS)
-        | merged_df.get("cohort_origin_loc", merged_df.get("cohort_origin", "")).astype(str).str.contains("test_cohort")
-    )
-
-    primary_df = merged_df[~is_supp].copy()
-    supp_df = merged_df[is_supp].copy()
-
-    # 1. Primary Analysis: Composite Dice @ top 10% vs Faithfulness Net Margin
     primary_dice_col = "composite_dice_top_10"
-    if primary_dice_col not in primary_df.columns:
-        cand = [c for c in primary_df.columns if "composite_dice" in c]
+    if primary_dice_col not in merged_df.columns:
+        cand = [c for c in merged_df.columns if "composite_dice" in c]
         if cand:
             primary_dice_col = cand[0]
         else:
             raise KeyError(f"Composite Dice column '{primary_dice_col}' not found.")
 
+    # Cohort separation
+    is_supp = (
+        merged_df["clean_id"].isin(SUPPLEMENTARY_IMAGE_IDS)
+        | merged_df.get("cohort_origin", "").astype(str).str.contains("test_cohort")
+    )
+    primary_df = merged_df[~is_supp].copy()
+    supp_df = merged_df[is_supp].copy()
+
+    # Track missing metric values across primary cohort
+    metric_cols_to_check = [
+        primary_dice_col,
+        "composite_iou_top_10",
+        "ma_dice_top_10",
+        "he_dice_top_10",
+        "ex_dice_top_10",
+        "se_dice_top_10",
+        "od_dice_top_10",
+        faith_col,
+    ]
+    missing_metric_counts: Dict[str, int] = {}
+    for col in metric_cols_to_check:
+        if col in primary_df.columns:
+            missing_metric_counts[col] = int(primary_df[col].isna().sum())
+
+    # Excluded records accounting for primary cohort
+    complete_primary_indices = []
+    excluded_primary_records: List[Dict[str, Any]] = []
+
+    for idx, row in primary_df.iterrows():
+        cid = row["clean_id"]
+        c_orig = row.get("cohort_origin", "primary")
+        grade = row.get("true_grade")
+        d_val = row.get(primary_dice_col)
+        f_val = row.get(faith_col)
+        h_stat = str(row.get("heatmap_status", "ok"))
+        is_inf = row.get("is_informative", True)
+
+        reasons = []
+        if h_stat == "non_informative_heatmap" or (is_inf is False):
+            reasons.append("non_informative_heatmap")
+        if grade == 0 and (pd.isna(d_val) or d_val is None):
+            reasons.append("grade_0_no_lesions_na")
+        elif pd.isna(d_val) or d_val is None:
+            reasons.append("missing_localization_metric")
+        if pd.isna(f_val) or f_val is None:
+            reasons.append("missing_faithfulness_metric")
+
+        if reasons:
+            excluded_primary_records.append({
+                "clean_id": cid,
+                "cohort_origin": c_orig,
+                "true_grade": grade,
+                "exclusion_reasons": reasons,
+                "primary_exclusion_reason": reasons[0],
+            })
+        else:
+            complete_primary_indices.append(idx)
+
+    complete_primary_df = primary_df.loc[complete_primary_indices].copy()
+
+    # 1. Primary Analysis: Composite Dice @ top 10% vs Faithfulness Net Margin on complete pairs
     primary_corr = compute_spearman_with_bootstrap_ci(
-        primary_df[primary_dice_col],
-        primary_df[faith_col],
+        complete_primary_df[primary_dice_col],
+        complete_primary_df[faith_col],
         n_bootstraps=n_bootstraps,
         seed=seed,
     )
+    primary_corr["n_complete_pairs"] = len(complete_primary_df)
+    primary_corr["n_excluded"] = len(excluded_primary_records)
 
-    # 2. Secondary Localization Metrics vs Faithfulness Net Margin (Primary Cohort)
+    # 2. Secondary Localization Metrics vs Faithfulness Net Margin (Primary Cohort, complete pairs per metric)
     secondary_metrics = [
         ("composite_iou_top_10", "Composite IoU"),
         ("ma_dice_top_10", "Microaneurysms (MA) Dice"),
@@ -394,30 +646,50 @@ def perform_statistical_analysis(
 
     secondary_corrs: Dict[str, Any] = {}
     for col, name in secondary_metrics:
-        if col in primary_df.columns and primary_df[col].notna().any():
-            secondary_corrs[col] = {
-                "display_name": name,
-                **compute_spearman_with_bootstrap_ci(
-                    primary_df[col],
-                    primary_df[faith_col],
-                    n_bootstraps=n_bootstraps,
-                    seed=seed,
-                ),
-            }
+        if col in primary_df.columns:
+            valid_sec = primary_df[
+                primary_df[col].notna()
+                & primary_df[faith_col].notna()
+                & (primary_df.get("heatmap_status", "ok") != "non_informative_heatmap")
+            ]
+            if len(valid_sec) > 0:
+                secondary_corrs[col] = {
+                    "display_name": name,
+                    "exploratory": True,
+                    **compute_spearman_with_bootstrap_ci(
+                        valid_sec[col],
+                        valid_sec[faith_col],
+                        n_bootstraps=n_bootstraps,
+                        seed=seed,
+                    ),
+                }
 
-    # 3. Grade-Wise Breakdown (Primary Cohort, grades 1-4, excluding grade == None)
-    grade_col = "true_grade_loc" if "true_grade_loc" in primary_df.columns else "true_grade"
+    # 3. Grade-Wise Breakdown (Primary Cohort, grades 0-4, excluding grade == None)
+    grade_col = "true_grade"
     grade_results: Dict[str, Any] = {}
     p_values_to_adjust: List[float] = []
     grade_keys_tested: List[str] = []
 
     for g in range(5):
-        # Subset with valid integer grade == g
-        sub = primary_df[primary_df[grade_col].notna() & (primary_df[grade_col] == g)]
+        sub = complete_primary_df[
+            complete_primary_df[grade_col].notna() & (complete_primary_df[grade_col] == g)
+        ]
         n_g = len(sub)
         grade_name = ICDR_NAMES.get(g, f"Grade {g}")
 
-        if n_g < 5:
+        if g == 0:
+            grade_results[f"grade_{g}"] = {
+                "grade": g,
+                "grade_name": grade_name,
+                "n": n_g,
+                "status": "insufficient_samples (Grade 0: no clinical lesions, N=0)",
+                "rho": None,
+                "p_value": None,
+                "p_value_fdr": None,
+                "ci_lower": None,
+                "ci_upper": None,
+            }
+        elif n_g < 5:
             grade_results[f"grade_{g}"] = {
                 "grade": g,
                 "grade_name": grade_name,
@@ -440,27 +712,58 @@ def perform_statistical_analysis(
                 "grade": g,
                 "grade_name": grade_name,
                 **corr_g,
-                "p_value_fdr": None,  # Will be populated by FDR adjustment
+                "p_value_fdr": None,
             }
             if corr_g.get("p_value") is not None:
                 p_values_to_adjust.append(corr_g["p_value"])
                 grade_keys_tested.append(f"grade_{g}")
 
-    # Apply Benjamini-Hochberg FDR correction across tested grades
     if p_values_to_adjust:
         adjusted_ps = benjamini_hochberg_fdr(p_values_to_adjust)
         for k, p_adj in zip(grade_keys_tested, adjusted_ps):
             grade_results[k]["p_value_fdr"] = p_adj
 
-    # 4. Supplementary Cohort Metrics
-    supp_corrs: Optional[Dict[str, Any]] = None
-    if len(supp_df) >= 3:
-        supp_corrs = compute_spearman_with_bootstrap_ci(
-            supp_df[primary_dice_col],
-            supp_df[faith_col],
-            n_bootstraps=n_bootstraps,
-            seed=seed,
-        )
+    # 4. Supplementary Cohort Transparency (N = 3)
+    supp_measurements = []
+    for _, s_row in supp_df.iterrows():
+        supp_measurements.append({
+            "image_id": s_row["clean_id"],
+            "true_grade": s_row.get("true_grade"),
+            "predicted_grade": s_row.get("predicted_grade"),
+            "composite_dice_top_10": s_row.get(primary_dice_col),
+            "composite_iou_top_10": s_row.get("composite_iou_top_10"),
+            "faithfulness_margin": s_row.get(faith_col),
+            "heatmap_status": s_row.get("heatmap_status", "ok"),
+            "is_informative": s_row.get("is_informative", True),
+        })
+
+    dice_vals = pd.to_numeric(supp_df[primary_dice_col], errors="coerce").dropna().values
+    faith_vals = pd.to_numeric(supp_df[faith_col], errors="coerce").dropna().values
+
+    supp_desc = {
+        "composite_dice": {
+            "mean": float(np.mean(dice_vals)) if len(dice_vals) > 0 else None,
+            "std": float(np.std(dice_vals, ddof=1)) if len(dice_vals) > 1 else (0.0 if len(dice_vals) == 1 else None),
+            "median": float(np.median(dice_vals)) if len(dice_vals) > 0 else None,
+            "n_valid": len(dice_vals),
+        },
+        "faithfulness_margin": {
+            "mean": float(np.mean(faith_vals)) if len(faith_vals) > 0 else None,
+            "std": float(np.std(faith_vals, ddof=1)) if len(faith_vals) > 1 else (0.0 if len(faith_vals) == 1 else None),
+            "median": float(np.median(faith_vals)) if len(faith_vals) > 0 else None,
+            "n_valid": len(faith_vals),
+        },
+    }
+
+    supp_analysis = {
+        "n": len(supp_df),
+        "status": "descriptive_only (N=3 insufficient for inferential hypothesis testing)",
+        "note": "With N=3, inferential rank correlation hypothesis testing is severely underpowered and omitted to prevent false scientific claims.",
+        "individual_measurements": supp_measurements,
+        "descriptive_summary": supp_desc,
+        "rho": None,
+        "p_value": None,
+    }
 
     return {
         "faithfulness_metric_used": faith_col,
@@ -469,10 +772,13 @@ def perform_statistical_analysis(
         "primary_cohort_count": len(primary_df),
         "supplementary_cohort_count": len(supp_df),
         "total_merged_count": len(merged_df),
+        "complete_primary_pairs_count": len(complete_primary_df),
+        "excluded_primary_records": excluded_primary_records,
+        "missing_metric_counts": missing_metric_counts,
         "primary_analysis": primary_corr,
         "secondary_analyses": secondary_corrs,
         "grade_wise_analyses": grade_results,
-        "supplementary_analysis": supp_corrs,
+        "supplementary_analysis": supp_analysis,
         "supplementary_image_ids": sorted(supp_df["clean_id"].tolist()),
     }
 
@@ -492,18 +798,25 @@ def generate_correlation_plot(
 
     is_supp = (
         merged_df["clean_id"].isin(SUPPLEMENTARY_IMAGE_IDS)
-        | merged_df.get("cohort_origin_loc", merged_df.get("cohort_origin", "")).astype(str).str.contains("test_cohort")
+        | merged_df.get("cohort_origin", "").astype(str).str.contains("test_cohort")
     )
     primary_df = merged_df[~is_supp].copy()
     supp_df = merged_df[is_supp].copy()
 
+    # Complete primary pairs for visualization and trendline
+    valid_primary = primary_df[
+        primary_df[dice_col].notna()
+        & primary_df[faith_col].notna()
+        & (primary_df.get("heatmap_status", "ok") != "non_informative_heatmap")
+    ].copy()
+
     fig, ax = plt.subplots(figsize=(8.5, 6.5), dpi=300)
 
-    # Subdivide primary into train-matched vs unique
-    cohort_col = "cohort_origin_loc" if "cohort_origin_loc" in primary_df.columns else "cohort_origin"
-    is_train_matched = primary_df[cohort_col].astype(str).str.contains("train_cohort")
-    train_matched = primary_df[is_train_matched]
-    unique_seg = primary_df[~is_train_matched]
+    # Subdivide valid primary into train-matched vs unique
+    cohort_col = "cohort_origin"
+    is_train_matched = valid_primary[cohort_col].astype(str).str.contains("train_cohort")
+    train_matched = valid_primary[is_train_matched]
+    unique_seg = valid_primary[~is_train_matched]
 
     # Scatter points
     ax.scatter(
@@ -531,29 +844,27 @@ def generate_correlation_plot(
     )
 
     if len(supp_df) > 0:
+        valid_supp = supp_df[supp_df[dice_col].notna() & supp_df[faith_col].notna()]
         ax.scatter(
-            supp_df[dice_col],
-            supp_df[faith_col],
+            valid_supp[dice_col],
+            valid_supp[faith_col],
             color="#ff7f0e",
             marker="^",
             alpha=0.9,
             s=70,
             edgecolors="k",
             linewidths=0.8,
-            label=f"Supplementary Test Overlap (N = {len(supp_df)})",
+            label=f"Supplementary Test Overlap (N = {len(valid_supp)}, Descriptive Only)",
             zorder=4,
         )
 
-    # Linear trendline for primary cohort
-    x_prim = primary_df[dice_col].values
-    y_prim = primary_df[faith_col].values
-    valid_idx = (~np.isnan(x_prim)) & (~np.isnan(y_prim))
+    # Linear trendline for complete primary pairs
+    xp = valid_primary[dice_col].values
+    yp = valid_primary[faith_col].values
 
-    if np.sum(valid_idx) >= 3:
-        xp = x_prim[valid_idx]
-        yp = y_prim[valid_idx]
+    if len(xp) >= 3:
         slope, intercept, _, _, _ = scipy.stats.linregress(xp, yp)
-        x_line = np.linspace(np.min(xp), np.max(xp), 100)
+        x_line = np.linspace(float(np.min(xp)), float(np.max(xp)), 100)
         y_line = slope * x_line + intercept
         ax.plot(
             x_line,
@@ -570,10 +881,10 @@ def generate_correlation_plot(
     p_val = p_res.get("p_value")
     ci_lo = p_res.get("ci_lower")
     ci_hi = p_res.get("ci_upper")
-    n_val = p_res.get("n", len(primary_df))
+    n_pairs = p_res.get("n_complete_pairs", len(valid_primary))
 
     stats_text = (
-        f"Primary Cohort (N = {n_val}):\n"
+        f"Primary Complete Pairs (N = {n_pairs}):\n"
         f"Spearman $\\rho$ = {rho_val:.3f}\n" if rho_val is not None else "Spearman $\\rho$: N/A\n"
     )
     if p_val is not None:
@@ -650,7 +961,32 @@ def generate_markdown_report(
     md.append(f"- **Frozen Checkpoint SHA-256**: `{checkpoint_sha256 or 'N/A (Dry-Run)'}`")
     md.append(f"- **Total Evaluated Images**: {analysis_results['total_merged_count']}")
     md.append(f"  - **Primary Cohort (N = {analysis_results['primary_cohort_count']})**: 57 training-matched + 21 unique segmentation images.")
-    md.append(f"  - **Supplementary Test Cohort (N = {analysis_results['supplementary_cohort_count']})**: Segregated test-overlap images ({', '.join(analysis_results['supplementary_image_ids'])}).\n")
+    md.append(f"  - **Supplementary Test Cohort (N = {analysis_results['supplementary_cohort_count']})**: Segregated test-overlap images ({', '.join(analysis_results['supplementary_image_ids'])}).")
+    md.append(f"- **Complete Primary Analysis Pairs**: {analysis_results['complete_primary_pairs_count']}\n")
+
+    # Merge and Missing Data Audit
+    md.append("## Data Matching & Missingness Audit\n")
+    missing_counts = analysis_results.get("missing_metric_counts", {})
+    if missing_counts:
+        md.append("| Metric Column | Missing / Null Values (N) | Completeness Rate (%) |")
+        md.append("| :--- | :---: | :---: |")
+        tot = analysis_results["primary_cohort_count"]
+        for col, m_cnt in missing_counts.items():
+            comp_rate = ((tot - m_cnt) / tot) * 100.0 if tot > 0 else 0.0
+            md.append(f"| `{col}` | {m_cnt} | {comp_rate:.1f}% |")
+        md.append("")
+
+    excluded_records = analysis_results.get("excluded_primary_records", [])
+    if excluded_records:
+        md.append(f"### Excluded Primary Records Accounting (Total Excluded: {len(excluded_records)})\n")
+        md.append("| Image ID | Cohort Origin | True Grade | Primary Exclusion Reason |")
+        md.append("| :--- | :--- | :---: | :--- |")
+        for rec in excluded_records:
+            g_str = str(rec["true_grade"]) if rec["true_grade"] is not None else "None (Unique Seg)"
+            md.append(f"| `{rec['clean_id']}` | {rec['cohort_origin']} | {g_str} | `{rec['primary_exclusion_reason']}` |")
+        md.append("")
+    else:
+        md.append("All primary cohort records formed complete pairs for analysis without exclusions.\n")
 
     md.append("## 1. Primary Hypothesis Evaluation\n")
     md.append("We test whether visual explanation quality correlates with internal decision fidelity:")
@@ -667,7 +1003,7 @@ def generate_markdown_report(
     p_str = f"{p_val:.4e}" if p_val is not None else "N/A"
     ci_str = f"[{ci_lo:.4f}, {ci_hi:.4f}]" if ci_lo is not None and ci_hi is not None else "N/A"
 
-    md.append("\n| Cohort | Sample Size (N) | Spearman $\\rho$ | Two-Sided $p$-value | 95% Bootstrap CI | Statistical Decision |")
+    md.append("\n| Cohort | Complete Pairs (N) | Spearman $\\rho$ | Two-Sided $p$-value | 95% Bootstrap CI | Statistical Decision |")
     md.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
 
     decision = "Inconclusive"
@@ -690,7 +1026,10 @@ def generate_markdown_report(
     md.append("")
 
     # 2. Secondary Metrics Table
-    md.append("## 2. Secondary Localization & Control Analyses (Primary Cohort)\n")
+    md.append("## 2. Secondary Localization & Control Analyses (Primary Cohort, Exploratory)\n")
+    md.append("> [!NOTE]")
+    md.append("> **Multiple-Comparison Policy**: The primary confirmatory hypothesis is restricted strictly to Composite Dice (top 10% saliency) versus Faithfulness Net Margin. All secondary lesion sub-type analyses (MA, HE, EX, SE) and negative control analyses (Optic Disc) are exploratory. P-values reported below are unadjusted nominal values.\n")
+
     md.append("| Localization Metric | Sample Size (N) | Spearman $\\rho$ | $p$-value | 95% Bootstrap CI | Role / Expected Behavior |")
     md.append("| :--- | :---: | :---: | :---: | :---: | :--- |")
 
@@ -698,14 +1037,14 @@ def generate_markdown_report(
         v_rho = f"{v['rho']:.4f}" if v.get("rho") is not None else "N/A"
         v_p = f"{v['p_value']:.4e}" if v.get("p_value") is not None else "N/A"
         v_ci = f"[{v['ci_lower']:.4f}, {v['ci_upper']:.4f}]" if v.get("ci_lower") is not None and v.get("ci_upper") is not None else "N/A"
-        role = "Negative Control (Expect $\\rho \\le 0$)" if "od_" in k else "Pathology Lesion Saliency"
+        role = "Negative Control (Expect $\\rho \\le 0$)" if "od_" in k else "Exploratory Lesion Subtype"
         md.append(f"| {v['display_name']} | {v.get('n', 'N/A')} | {v_rho} | {v_p} | {v_ci} | {role} |")
     md.append("")
 
     # 3. Grade-Wise Analysis
     md.append("## 3. Grade-Wise Subgroup Analysis (Primary Cohort)\n")
     md.append("Analysis restricted to the 57 training-matched images with verified ground-truth ICDR grades (the 21 unique images have `true_grade = None` and are excluded from grade subgroups):\n")
-    md.append("| ICDR Grade | Clinical Severity | N | Spearman $\\rho$ | Raw $p$-value | FDR-Adjusted $p$-value | 95% Bootstrap CI | Status |")
+    md.append("| ICDR Grade | Clinical Severity | Complete Pairs (N) | Spearman $\\rho$ | Raw $p$-value | FDR-Adjusted $p$-value | 95% Bootstrap CI | Status |")
     md.append("| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |")
 
     for g in range(5):
@@ -721,14 +1060,33 @@ def generate_markdown_report(
 
     # 4. Supplementary Cohort Transparency
     md.append("## 4. Supplementary Test Cohort Transparency (N = 3)\n")
-    md.append("The 3 segmentation images matched via pairwise visual hashing to the official 103-image IDRiD test grading cohort (`IDRiD_09`, `IDRiD_22`, `IDRiD_31`) are strictly isolated here to preserve zero-leakage standards:\n")
-    s_res = analysis_results.get("supplementary_analysis")
-    if s_res and s_res.get("rho") is not None:
-        md.append(f"- **Sample Size**: N = {s_res['n']}")
-        md.append(f"- **Spearman $\\rho$**: `{s_res['rho']:.4f}` ($p = {s_res['p_value']:.4f}$)")
-    else:
-        md.append("- **Sample Size**: N = 3 (Insufficient for standalone inferential significance testing; reported descriptively)")
-    md.append("")
+    md.append("The 3 segmentation images matched via pairwise visual hashing to the official 103-image IDRiD test grading cohort (`IDRiD_09`, `IDRiD_22`, `IDRiD_31`) are strictly isolated here to preserve zero-leakage standards.\n")
+    md.append("> [!NOTE]")
+    md.append("> **Statistical Notice**: With sample size N = 3, inferential hypothesis testing (such as a Spearman rank correlation p-value) is severely underpowered and scientifically invalid. Therefore, the supplementary cohort is reported purely descriptively for full transparency without inferential claims.\n")
+
+    s_res = analysis_results.get("supplementary_analysis", {})
+    s_measurements = s_res.get("individual_measurements", [])
+    if s_measurements:
+        md.append("### Individual Supplementary Measurements\n")
+        md.append("| Image ID | True Grade | Predicted Grade | Composite Dice @ 10% | Faithfulness Margin | Heatmap Status |")
+        md.append("| :--- | :---: | :---: | :---: | :---: | :--- |")
+        for m_item in s_measurements:
+            dice_s = f"{m_item['composite_dice_top_10']:.4f}" if m_item.get("composite_dice_top_10") is not None else "N/A"
+            faith_s = f"{m_item['faithfulness_margin']:.4f}" if m_item.get("faithfulness_margin") is not None else "N/A"
+            md.append(f"| `{m_item['image_id']}` | {m_item.get('true_grade')} | {m_item.get('predicted_grade')} | {dice_s} | {faith_s} | `{m_item.get('heatmap_status')}` |")
+        md.append("")
+
+    s_desc = s_res.get("descriptive_summary", {})
+    if s_desc:
+        md.append("### Supplementary Descriptive Statistics\n")
+        md.append("| Metric | Valid N | Mean | Median | Std Dev |")
+        md.append("| :--- | :---: | :---: | :---: | :---: |")
+        for m_name, d_dict in s_desc.items():
+            mean_s = f"{d_dict['mean']:.4f}" if d_dict.get("mean") is not None else "N/A"
+            med_s = f"{d_dict['median']:.4f}" if d_dict.get("median") is not None else "N/A"
+            std_s = f"{d_dict['std']:.4f}" if d_dict.get("std") is not None else "N/A"
+            md.append(f"| `{m_name}` | {d_dict.get('n_valid', 'N/A')} | {mean_s} | {med_s} | {std_s} |")
+        md.append("")
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
@@ -871,6 +1229,10 @@ def main() -> int:
                 "cohort_origin_loc": co,
                 "true_grade": g,
                 "true_grade_loc": g,
+                "predicted_grade": g if g is not None else 2,
+                "target_class": g if g is not None else 2,
+                "heatmap_status": "ok",
+                "is_informative": True,
                 "composite_dice_top_10": d,
                 "composite_iou_top_10": d * 0.5,
                 "ma_dice_top_10": d * 0.8,

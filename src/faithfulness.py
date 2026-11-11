@@ -36,7 +36,11 @@ except ImportError:
 from src.preprocessing import extract_retinal_fov_mask
 
 from src.dataset import IMAGENET_MEAN, IMAGENET_STD
-from src.explainability import binarize_heatmap
+from src.explainability import (
+    binarize_heatmap,
+    check_heatmap_informativeness,
+    validate_fov_mask,
+)
 from src.model import ICDR_GRADES
 
 logger = logging.getLogger("faithfulness")
@@ -104,16 +108,20 @@ def apply_ablation_mask(
 def generate_fov_restricted_salient_mask(
     heatmap: np.ndarray,
     valid_fov_mask: np.ndarray,
-    fraction: float,
+    fraction: float = 0.10,
 ) -> Tuple[np.ndarray, int]:
-    """Generate a salient ablation mask strictly restricted to the valid retinal FOV.
+    """Generate a binary salient mask strictly confined to the retinal FOV.
 
     Extracts the top `fraction` of hottest Grad-CAM activations computed relative
     to the valid retinal surface area (excluding empty padding/background).
+    Uses the exact same deterministic FOV-restricted percentile selection and
+    tie-breaking logic as binarize_heatmap.
 
     Guarantees:
-    1. Exactly round(fraction * N_fov) pixels are selected.
+    1. Exactly round(fraction * N_fov) pixels are selected for informative heatmaps.
     2. Zero pixels outside the valid retinal FOV are selected.
+    3. For non-informative heatmaps (flat, zero, or near-constant), returns an all-zero
+       mask with 0 count, preventing arbitrary pixel deletions.
 
     Args:
         heatmap: 2D array of continuous Grad-CAM activations (H, W).
@@ -124,35 +132,21 @@ def generate_fov_restricted_salient_mask(
         salient_mask: Binary mask array of shape (H, W) and dtype uint8.
         pixel_count: Exact number of activated pixels.
     """
-    h, w = heatmap.shape[:2]
-    if valid_fov_mask.shape != (h, w):
-        raise ValueError(
-            f"valid_fov_mask shape {valid_fov_mask.shape} does not match heatmap {(h, w)}"
-        )
+    if valid_fov_mask is None:
+        raise ValueError("valid_fov_mask is required.")
 
-    fov_indices = np.flatnonzero(valid_fov_mask > 0)
-    total_fov_pixels = len(fov_indices)
-
-    if total_fov_pixels == 0 or fraction <= 0.0:
+    fov_bool = validate_fov_mask(valid_fov_mask, heatmap.shape)
+    is_inf, _ = check_heatmap_informativeness(heatmap, fov_mask=valid_fov_mask)
+    if not is_inf or fraction <= 0.0:
+        h, w = heatmap.shape[:2]
         return np.zeros((h, w), dtype=np.uint8), 0
 
-    target_pixel_count = int(round(fraction * total_fov_pixels))
-    target_pixel_count = max(1, min(target_pixel_count, total_fov_pixels))
-
-    # Extract activation values strictly inside the valid retinal FOV
-    fov_values = heatmap.flat[fov_indices]
-
-    # Find the top `target_pixel_count` highest values within the FOV
-    partition_idx = len(fov_values) - target_pixel_count
-    top_local_indices = np.argpartition(fov_values, partition_idx)[partition_idx:]
-
-    # Map back to global flattened indices
-    top_global_indices = fov_indices[top_local_indices]
-
-    mask_flat = np.zeros(h * w, dtype=np.uint8)
-    mask_flat[top_global_indices] = 1
-    salient_mask = mask_flat.reshape((h, w))
-
+    salient_mask = binarize_heatmap(
+        heatmap=heatmap,
+        threshold=fraction,
+        method="percentile",
+        fov_mask=valid_fov_mask,
+    )
     actual_count = int(np.sum(salient_mask))
     return salient_mask, actual_count
 
@@ -361,6 +355,29 @@ def evaluate_progressive_deletion(
     if valid_fov_mask is None:
         valid_fov_mask = extract_retinal_fov_mask(image_rgb)
 
+    is_inf, heatmap_status = check_heatmap_informativeness(heatmap, fov_mask=valid_fov_mask)
+    results["heatmap_status"] = heatmap_status
+    results["is_informative"] = is_inf
+
+    if not is_inf:
+        for fill in strategies:
+            results["evaluations_by_fill"][fill] = {
+                "heatmap_status": heatmap_status,
+                "is_informative": False,
+                "steps": [],
+                "mean_deletion_drop_salient": None,
+                "mean_deletion_drop_random": None,
+                "mean_deletion_margin": None,
+                "audc_salient": None,
+                "audc_random": None,
+                "audc_margin": None,
+                "normalized_pauc_salient": None,
+                "normalized_pauc_random": None,
+                "normalized_pauc_margin": None,
+                "overall_is_faithful": None,
+            }
+        return results
+
     for fill in strategies:
         step_records = []
         salient_drops = []
@@ -490,6 +507,9 @@ def aggregate_faithfulness_scores(
         "grade_wise": {},
     }
 
+    non_informative_count = sum(1 for r in results if not r.get("is_informative", True))
+    summary["non_informative_images"] = non_informative_count
+
     all_audc_salient = []
     all_audc_random = []
     all_audc_margins = []
@@ -497,6 +517,7 @@ def aggregate_faithfulness_scores(
     all_pauc_random = []
     all_pauc_margins = []
     faithful_count = 0
+    informative_count = 0
 
     grade_pauc_margins: Dict[int, List[float]] = {g: [] for g in range(5)}
     grade_pauc_salient: Dict[int, List[float]] = {g: [] for g in range(5)}
@@ -509,39 +530,48 @@ def aggregate_faithfulness_scores(
         g = r.get("true_grade")
         fill_eval = r["evaluations_by_fill"].get(primary_fill, {})
 
-        audc_s = fill_eval.get("mean_deletion_drop_salient", fill_eval.get("audc_salient", 0.0))
-        audc_r = fill_eval.get("mean_deletion_drop_random", fill_eval.get("audc_random", 0.0))
-        audc_m = fill_eval.get("mean_deletion_margin", fill_eval.get("audc_margin", 0.0))
+        if not r.get("is_informative", True) or fill_eval.get("is_informative") is False:
+            continue
+
+        audc_s = fill_eval.get("mean_deletion_drop_salient", fill_eval.get("audc_salient"))
+        audc_r = fill_eval.get("mean_deletion_drop_random", fill_eval.get("audc_random"))
+        audc_m = fill_eval.get("mean_deletion_margin", fill_eval.get("audc_margin"))
 
         pauc_s = fill_eval.get("normalized_pauc_salient", audc_s)
         pauc_r = fill_eval.get("normalized_pauc_random", audc_r)
         pauc_m = fill_eval.get("normalized_pauc_margin", audc_m)
 
-        all_audc_salient.append(audc_s)
-        all_audc_random.append(audc_r)
-        all_audc_margins.append(audc_m)
+        if audc_s is not None and audc_r is not None and audc_m is not None:
+            all_audc_salient.append(float(audc_s))
+            all_audc_random.append(float(audc_r))
+            all_audc_margins.append(float(audc_m))
 
-        all_pauc_salient.append(pauc_s)
-        all_pauc_random.append(pauc_r)
-        all_pauc_margins.append(pauc_m)
+        if pauc_s is not None and pauc_r is not None and pauc_m is not None:
+            all_pauc_salient.append(float(pauc_s))
+            all_pauc_random.append(float(pauc_r))
+            all_pauc_margins.append(float(pauc_m))
 
-        if fill_eval.get("overall_is_faithful", False):
+        informative_count += 1
+        if fill_eval.get("overall_is_faithful") is True:
             faithful_count += 1
 
         if g is not None and g in grade_audc_margins:
-            grade_audc_margins[g].append(audc_m)
-            grade_salient_drops[g].append(audc_s)
-            grade_random_drops[g].append(audc_r)
-            grade_pauc_margins[g].append(pauc_m)
-            grade_pauc_salient[g].append(pauc_s)
-            grade_pauc_random[g].append(pauc_r)
+            if audc_m is not None:
+                grade_audc_margins[g].append(float(audc_m))
+                grade_salient_drops[g].append(float(audc_s))
+                grade_random_drops[g].append(float(audc_r))
+            if pauc_m is not None:
+                grade_pauc_margins[g].append(float(pauc_m))
+                grade_pauc_salient[g].append(float(pauc_s))
+                grade_pauc_random[g].append(float(pauc_r))
 
     def _calc_stats(arr: List[float]) -> Dict[str, Any]:
-        if not arr:
+        valid = [v for v in arr if v is not None and not np.isnan(v)]
+        if not valid:
             return {"count": 0, "mean": None, "median": None, "std": None, "min": None, "max": None}
-        a = np.array(arr, dtype=np.float64)
+        a = np.array(valid, dtype=np.float64)
         return {
-            "count": len(arr),
+            "count": len(valid),
             "mean": float(np.mean(a)),
             "median": float(np.median(a)),
             "std": float(np.std(a)),
@@ -562,7 +592,7 @@ def aggregate_faithfulness_scores(
         "audc_random": _calc_stats(all_audc_random),
         "audc_margin": _calc_stats(all_audc_margins),
         "faithful_cases_count": faithful_count,
-        "faithful_rate_pct": float(faithful_count / max(1, total_images) * 100.0),
+        "faithful_rate_pct": float(faithful_count / max(1, informative_count) * 100.0) if informative_count > 0 else 0.0,
     }
 
     for g in range(5):

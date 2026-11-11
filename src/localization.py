@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from src.explainability import binarize_heatmap
+from src.explainability import binarize_heatmap, check_heatmap_informativeness
 
 logger = logging.getLogger("localization")
 
@@ -166,6 +166,8 @@ def evaluate_single_image_localization(
         fov_pixels = heatmap.size
         fov_aware = False
 
+    is_inf, heatmap_status = check_heatmap_informativeness(heatmap, fov_mask=fov_mask)
+
     eval_result: Dict[str, Any] = {
         "image_id": image_id,
         "grade": int(grade) if grade is not None else None,
@@ -174,6 +176,8 @@ def evaluate_single_image_localization(
         "thresholds": thresholds,
         "fov_aware": fov_aware,
         "fov_pixel_count": fov_pixels,
+        "heatmap_status": heatmap_status,
+        "is_informative": is_inf,
         "metrics_by_threshold": {},
     }
 
@@ -185,6 +189,8 @@ def evaluate_single_image_localization(
 
         t_metrics: Dict[str, Any] = {
             "salient_pixel_count": pred_pixel_count,
+            "heatmap_status": heatmap_status,
+            "is_informative": is_inf,
             "lesions": {},
             "control": {},
         }
@@ -194,7 +200,7 @@ def evaluate_single_image_localization(
             is_annotated = annotation_status.get(code, True)
             mask = ground_truth_masks.get(code)
 
-            if is_grade_0 or not is_annotated or mask is None:
+            if not is_inf or is_grade_0 or not is_annotated or mask is None:
                 iou = None
                 dice = None
                 gt_pixels = 0 if mask is None else int(np.sum(mask > 0))
@@ -212,7 +218,7 @@ def evaluate_single_image_localization(
 
         # 2. Evaluate composite lesion mask (MA U HE U EX U SE)
         comp_mask = ground_truth_masks.get("composite")
-        if is_grade_0 or comp_mask is None:
+        if not is_inf or is_grade_0 or comp_mask is None:
             comp_iou = None
             comp_dice = None
             comp_gt_pixels = 0 if comp_mask is None else int(np.sum(comp_mask > 0))
@@ -230,14 +236,20 @@ def evaluate_single_image_localization(
 
         # 3. Evaluate normal anatomical control: Optic Disc (OD)
         od_mask = ground_truth_masks.get("OD")
-        if od_mask is not None:
+        if not is_inf or od_mask is None:
+            od_iou = None
+            od_dice = None
+            od_gt_pixels = 0 if od_mask is None else int(np.sum(od_mask > 0))
+        else:
             od_gt_pixels = int(np.sum(od_mask > 0))
             od_iou = compute_iou(pred_binary, od_mask, empty_value=0.0)
             od_dice = compute_dice(pred_binary, od_mask, empty_value=0.0)
-        else:
-            od_iou = None
-            od_dice = None
-            od_gt_pixels = 0
+
+        t_metrics["control"]["OD"] = {
+            "iou": od_iou,
+            "dice": od_dice,
+            "gt_pixel_count": od_gt_pixels,
+        }
 
         t_metrics["control"]["OD"] = {
             "iou": od_iou,

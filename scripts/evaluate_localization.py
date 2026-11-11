@@ -542,6 +542,8 @@ def export_localization_predictions_csv(results: List[Dict[str, Any]], output_cs
             "true_grade": r.get("grade"),
             "predicted_grade": r.get("predicted_class"),
             "cohort_origin": r.get("cohort_origin"),
+            "heatmap_status": r.get("heatmap_status", "ok"),
+            "is_informative": r.get("is_informative", True),
             "composite_iou_top_10": comp.get("iou"),
             "composite_dice_top_10": comp.get("dice"),
             "ma_iou_top_10": ma.get("iou"),

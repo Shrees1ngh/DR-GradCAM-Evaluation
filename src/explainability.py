@@ -258,6 +258,81 @@ class GradCAM:
         return results
 
 
+def validate_fov_mask(
+    fov_mask: Optional[np.ndarray],
+    expected_shape: Tuple[int, int],
+) -> Optional[np.ndarray]:
+    """Validate retinal field of view (FOV) mask geometry and binary values.
+
+    Args:
+        fov_mask: Optional 2D array representing the binary retinal FOV mask.
+        expected_shape: Expected (height, width) tuple.
+
+    Returns:
+        Boolean numpy array of shape (H, W) where True indicates valid retinal FOV,
+        or None if fov_mask is None.
+
+    Raises:
+        ValueError: If fov_mask shape is invalid, values are non-binary, or mask is empty.
+    """
+    if fov_mask is None:
+        return None
+    if fov_mask.ndim != 2:
+        raise ValueError(f"FOV mask must be 2-dimensional (H, W), got shape {fov_mask.shape}")
+    if fov_mask.shape != expected_shape:
+        raise ValueError(f"FOV mask shape {fov_mask.shape} does not match expected shape {expected_shape}")
+    u_vals = set(np.unique(fov_mask))
+    if not u_vals.issubset({0, 1, 255}):
+        raise ValueError(f"FOV mask contains non-binary values: {u_vals}")
+    fov_bool = (fov_mask > 0)
+    if int(np.sum(fov_bool)) == 0:
+        raise ValueError("FOV mask is empty (contains 0 positive pixels).")
+    return fov_bool
+
+
+def check_heatmap_informativeness(
+    heatmap: np.ndarray,
+    fov_mask: Optional[np.ndarray] = None,
+    tolerance: float = 1e-6,
+) -> Tuple[bool, str]:
+    """Check if a heatmap contains meaningful spatial contrast within the valid retinal FOV.
+
+    A heatmap is considered non-informative if:
+    - All activations within the FOV are zero or practically zero (max <= 1e-8)
+    - The peak-to-peak variation (max - min) within the FOV is <= tolerance (default: 1e-6)
+    - The standard deviation within the FOV is <= 1e-7
+
+    Args:
+        heatmap: 2D numpy array (H, W).
+        fov_mask: Optional binary mask (H, W) restricting evaluation to valid retinal tissue.
+        tolerance: Numerical threshold for peak-to-peak variation.
+
+    Returns:
+        is_informative: True if heatmap has informative spatial variation, False otherwise.
+        status: 'ok' if informative, or 'non_informative_heatmap' if flat/zero/near-constant.
+    """
+    if heatmap.ndim != 2:
+        raise ValueError(f"Heatmap must be 2-dimensional (H, W), got shape {heatmap.shape}")
+
+    fov_bool = validate_fov_mask(fov_mask, heatmap.shape)
+    if fov_bool is not None:
+        vals = heatmap[fov_bool]
+    else:
+        vals = heatmap.ravel()
+
+    if len(vals) == 0:
+        return False, "non_informative_heatmap"
+
+    max_val = float(np.max(vals))
+    min_val = float(np.min(vals))
+    ptp = max_val - min_val
+
+    if max_val <= 1e-8 or ptp <= tolerance or float(np.std(vals)) <= 1e-7:
+        return False, "non_informative_heatmap"
+
+    return True, "ok"
+
+
 def binarize_heatmap(
     heatmap: np.ndarray,
     threshold: float = 0.10,
@@ -273,6 +348,8 @@ def binarize_heatmap(
     - For method='percentile', the selected pixel percentage is computed strictly
       relative to the count of valid retinal FOV pixels (not the full image canvas).
     - Resolves ties deterministically using coordinate raster ordering.
+    - If the heatmap is constant, near-constant, or zero within the FOV (non-informative),
+      returns an empty mask without selecting arbitrary pixels.
 
     Args:
         heatmap: 2D numpy array (H, W) with values in [0.0, 1.0].
@@ -295,19 +372,18 @@ def binarize_heatmap(
     if not (0.0 <= threshold <= 1.0):
         raise ValueError(f"Threshold must be within [0.0, 1.0], got {threshold}")
 
-    if fov_mask is not None:
-        if fov_mask.shape != heatmap.shape:
-            raise ValueError(f"FOV mask shape {fov_mask.shape} does not match heatmap shape {heatmap.shape}")
-        u_vals = set(np.unique(fov_mask))
-        if not u_vals.issubset({0, 1, 255}):
-            raise ValueError(f"FOV mask contains non-binary values: {u_vals}")
-        fov_bool = (fov_mask > 0)
-        fov_pixels = int(np.sum(fov_bool))
-        if fov_pixels == 0:
-            raise ValueError("FOV mask is empty (contains 0 positive pixels).")
-    else:
-        fov_bool = None
-        fov_pixels = heatmap.size
+    if method not in ("percentile", "relative", "absolute"):
+        raise ValueError(
+            f"Unrecognized thresholding method: '{method}'. Choose 'percentile', 'relative', or 'absolute'."
+        )
+
+    fov_bool = validate_fov_mask(fov_mask, heatmap.shape)
+    fov_pixels = int(np.sum(fov_bool)) if fov_bool is not None else heatmap.size
+
+    # Check informativeness: do not select arbitrary pixels from flat heatmaps
+    is_inf, _ = check_heatmap_informativeness(heatmap, fov_mask=fov_mask)
+    if not is_inf:
+        return np.zeros_like(heatmap, dtype=np.uint8)
 
     if method == "percentile":
         if fov_bool is not None:
@@ -321,9 +397,6 @@ def binarize_heatmap(
             fov_y, fov_x = np.where(fov_bool)
             fov_vals = heatmap[fov_y, fov_x]
 
-            if np.max(fov_vals) == np.min(fov_vals):
-                return np.zeros_like(heatmap, dtype=np.uint8)
-
             flat_coords = np.ravel_multi_index((fov_y, fov_x), heatmap.shape)
             # Deterministic tie-breaking: highest activation first, ties broken by coordinate raster order
             sorted_order = np.lexsort((flat_coords, -fov_vals))
@@ -335,13 +408,20 @@ def binarize_heatmap(
 
         else:
             # Full canvas percentile thresholding (backward compatible)
-            percentile_value = (1.0 - threshold) * 100.0
-            cutoff = float(np.percentile(heatmap, percentile_value))
-
-            if np.max(heatmap) == np.min(heatmap):
+            k = int(round(threshold * fov_pixels))
+            if k <= 0:
                 return np.zeros_like(heatmap, dtype=np.uint8)
+            if k >= fov_pixels:
+                return np.ones_like(heatmap, dtype=np.uint8)
 
-            return (heatmap >= cutoff).astype(np.uint8)
+            flat_vals = heatmap.ravel()
+            flat_coords = np.arange(heatmap.size)
+            sorted_order = np.lexsort((flat_coords, -flat_vals))
+            top_k_coords = flat_coords[sorted_order[:k]]
+
+            binary_mask = np.zeros_like(heatmap, dtype=np.uint8)
+            binary_mask.flat[top_k_coords] = 1
+            return binary_mask
 
     elif method == "relative":
         if fov_bool is not None:

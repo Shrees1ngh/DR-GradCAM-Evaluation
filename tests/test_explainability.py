@@ -8,7 +8,9 @@ import pytest
 from src.explainability import (
     binarize_heatmap,
     build_explanation_summary,
+    check_heatmap_informativeness,
     generate_gradcam_overlay,
+    validate_fov_mask,
 )
 
 
@@ -89,6 +91,98 @@ def test_binarize_heatmap_invalid_inputs():
 
     with pytest.raises(ValueError, match="Unrecognized"):
         binarize_heatmap(np.zeros((10, 10)), threshold=0.1, method="invalid_method")
+
+
+def test_validate_fov_mask_behavior():
+    """Verify validate_fov_mask validation and error handling."""
+    # None returns None
+    assert validate_fov_mask(None, (50, 50)) is None
+
+    # Invalid dimension
+    with pytest.raises(ValueError, match="2-dimensional"):
+        validate_fov_mask(np.ones((50, 50, 3), dtype=np.uint8), (50, 50))
+
+    # Mismatched shape
+    with pytest.raises(ValueError, match="does not match"):
+        validate_fov_mask(np.ones((60, 60), dtype=np.uint8), (50, 50))
+
+    # Non-binary values
+    with pytest.raises(ValueError, match="non-binary"):
+        validate_fov_mask(np.full((50, 50), 2, dtype=np.uint8), (50, 50))
+
+    # Empty mask (0 positive pixels)
+    with pytest.raises(ValueError, match="empty"):
+        validate_fov_mask(np.zeros((50, 50), dtype=np.uint8), (50, 50))
+
+    # Valid binary mask {0, 1}
+    mask_1 = np.zeros((50, 50), dtype=np.uint8)
+    mask_1[10:30, 10:30] = 1
+    validated = validate_fov_mask(mask_1, (50, 50))
+    assert validated is not None
+    assert validated.shape == (50, 50)
+    assert validated.dtype == bool
+    assert np.sum(validated) == 400
+
+    # Valid mask with 255
+    mask_255 = np.zeros((50, 50), dtype=np.uint8)
+    mask_255[10:30, 10:30] = 255
+    validated_255 = validate_fov_mask(mask_255, (50, 50))
+    assert np.sum(validated_255) == 400
+
+
+def test_check_heatmap_informativeness_behavior():
+    """Verify informativeness checks for zero, constant, and near-constant heatmaps."""
+    # 1. All-zero heatmap
+    zero_map = np.zeros((50, 50), dtype=np.float32)
+    is_inf, stat = check_heatmap_informativeness(zero_map)
+    assert is_inf is False
+    assert stat == "non_informative_heatmap"
+
+    # 2. Constant nonzero heatmap (e.g. all 0.5)
+    const_map = np.full((50, 50), 0.5, dtype=np.float32)
+    is_inf, stat = check_heatmap_informativeness(const_map)
+    assert is_inf is False
+    assert stat == "non_informative_heatmap"
+
+    # 3. Near-constant heatmap with variation below tolerance
+    near_const = np.full((50, 50), 0.5, dtype=np.float32)
+    near_const[0, 0] = 0.5 + 1e-7
+    is_inf, stat = check_heatmap_informativeness(near_const, tolerance=1e-6)
+    assert is_inf is False
+    assert stat == "non_informative_heatmap"
+
+    # 4. Informative heatmap with distinct spatial variation
+    informative = np.zeros((50, 50), dtype=np.float32)
+    informative[20:30, 20:30] = 0.8
+    is_inf, stat = check_heatmap_informativeness(informative)
+    assert is_inf is True
+    assert stat == "ok"
+
+
+def test_binarize_heatmap_deterministic_tie_breaking_and_fov():
+    """Verify deterministic tie-breaking and exact pixel counts within valid retinal FOV."""
+    h, w = 40, 40
+    # Heatmap with tied regions
+    heatmap = np.zeros((h, w), dtype=np.float32)
+    heatmap[10:30, 10:30] = 0.8  # 400 tied pixels
+    heatmap[0:10, 0:10] = 0.3    # background
+
+    # Circular FOV mask
+    fov = np.zeros((h, w), dtype=np.uint8)
+    fov[5:35, 5:35] = 1
+    fov_pixels = int(np.sum(fov))
+
+    # Top 10% of FOV pixels
+    mask1 = binarize_heatmap(heatmap, threshold=0.10, method="percentile", fov_mask=fov)
+    expected_k = int(round(0.10 * fov_pixels))
+
+    assert np.sum(mask1) == expected_k
+    # All selected pixels must be inside the FOV mask
+    assert np.all(mask1[fov == 0] == 0)
+
+    # Repeat to ensure 100% deterministic reproducibility
+    mask2 = binarize_heatmap(heatmap, threshold=0.10, method="percentile", fov_mask=fov)
+    np.testing.assert_array_equal(mask1, mask2)
 
 
 def test_generate_gradcam_overlay():

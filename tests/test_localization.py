@@ -409,7 +409,8 @@ def test_gradcam_with_frozen_model_parameters():
 
 def test_grade_unavailable_single_image_localization():
     """Verify evaluate_single_image_localization gracefully handles grade=None (unavailable label)."""
-    h = np.ones((50, 50), dtype=np.float32)
+    h = np.zeros((50, 50), dtype=np.float32)
+    h[10:20, 10:20] = 1.0
     m = np.zeros((50, 50), dtype=np.uint8)
     m[10:20, 10:20] = 1
     masks = {"MA": m, "HE": m, "EX": m, "SE": m, "composite": m, "OD": m}
@@ -430,6 +431,28 @@ def test_grade_unavailable_single_image_localization():
     # Metrics should still be computed for valid masks
     t10 = res["metrics_by_threshold"]["top_10_pct"]
     assert t10["lesions"]["composite"]["iou"] is not None
+
+
+def test_evaluate_single_image_localization_non_informative_heatmap():
+    """Verify non-informative (flat) heatmap sets status and None metrics."""
+    h = np.ones((50, 50), dtype=np.float32) * 0.5
+    m = np.zeros((50, 50), dtype=np.uint8)
+    m[10:20, 10:20] = 1
+    masks = {"MA": m, "HE": m, "EX": m, "SE": m, "composite": m, "OD": m}
+
+    res = evaluate_single_image_localization(
+        heatmap=h,
+        ground_truth_masks=masks,
+        image_id="flat_img_01",
+        grade=2,
+        cohort_origin="idrid_grading_train_cohort",
+    )
+
+    assert res["heatmap_status"] == "non_informative_heatmap"
+    assert res["is_informative"] is False
+    t10 = res["metrics_by_threshold"]["top_10_pct"]
+    assert t10["lesions"]["composite"]["iou"] is None
+    assert t10["lesions"]["composite"]["dice"] is None
 
 
 def test_cohort_and_grade_stratification_exact_counts():
