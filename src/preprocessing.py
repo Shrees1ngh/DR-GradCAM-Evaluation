@@ -317,6 +317,8 @@ def evaluate_fov_mask_quality(
 
     h, w = fov_mask.shape[:2]
     total_pixels = h * w
+    flags = []
+
     fov_pixels = int(np.sum(fov_mask == 1))
     fov_area_ratio = float(fov_pixels / total_pixels) if total_pixels > 0 else 0.0
 
@@ -330,7 +332,6 @@ def evaluate_fov_mask_quality(
         if perimeter > 0:
             circularity = float(4.0 * np.pi * area / (perimeter * perimeter))
 
-    flags = []
     if fov_pixels == 0:
         flags.append("EMPTY_FOV")
     elif fov_area_ratio < 0.50:
@@ -515,6 +516,9 @@ def run_fov_quality_control(
 - Format: Centered square (512x512)
 - Expected Active Retinal Area Ratio: ~0.60 - 0.78 (theoretical max for inscribed circle: pi/4 = 78.54%)
 - Flags to monitor: `EMPTY_FOV`, `UNUSUALLY_SMALL` (< 0.50), `UNUSUALLY_LARGE` (> 0.85), `PADDING_LEAK`, `IRREGULAR_GEOMETRY` (< 0.60)
+
+> [!NOTE]
+> Mathematical quality control confirms geometry, aperture bounds, circularity, and absence of canvas margin leakage. It does not claim clinical expert boundary accuracy or fine anatomic margin verification.
 """
         output_md.write_text(md_content, encoding="utf-8")
         return {
@@ -602,6 +606,10 @@ def run_fov_quality_control(
         f"- **Flagged / Anomalous Masks**: {failed_cnt}",
         f"- **Mean Active FOV Area Ratio**: {mean_ratio:.4f} (expected ~0.60 - 0.78)",
         f"- **Contact Sheet Montage**: `reports/fov_montage_81.png` (9x9 grid covering all {len(overlays)} images)",
+        "",
+        "> [!NOTE]",
+        "> Mathematical quality control confirms geometry, aperture bounds, circularity, and absence of canvas margin leakage.",
+        "> It does not claim clinical expert boundary accuracy or fine anatomic margin verification.",
         "",
         "### Quality Control Summary Table",
         "",

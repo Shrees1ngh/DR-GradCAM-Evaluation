@@ -434,6 +434,47 @@ def test_verify_splits_leakage_duplicate_ids_detected():
     assert any("Duplicate image identities detected in IDRiD Train" in c["details"] for c in res["checks"])
 
 
+def test_verify_splits_leakage_empty_datasets_strict_mode(tmp_path: Path):
+    """Verify empty IDRiD datasets in strict mode trigger FAILED status and report."""
+    from scripts.preprocess_data import generate_report, verify_splits_leakage
+
+    valid_train = pd.DataFrame({"image_id": [f"IDRiD_train_{i:03d}" for i in range(413)]})
+    valid_test = pd.DataFrame({"image_id": [f"IDRiD_test_{i:03d}" for i in range(103)]})
+    valid_seg = pd.DataFrame({"image_id": [f"IDRiD_seg_{i:02d}" for i in range(81)]})
+    empty_df = pd.DataFrame()
+
+    # 1. Empty IDRiD Train in strict mode must FAIL
+    res_empty_tr = verify_splits_leakage(
+        empty_df, empty_df, empty_df, valid_test, idrid_seg=valid_seg, validation_mode="strict"
+    )
+    assert res_empty_tr["is_leakage_free"] is False
+    assert "FAILED" in res_empty_tr["overall_status"]
+    assert any(c["name"] == "IDRiD Training Set Integrity" and c["status"] == "FAILED" for c in res_empty_tr["checks"])
+
+    # 2. Empty IDRiD Test in strict mode must FAIL
+    res_empty_te = verify_splits_leakage(
+        empty_df, empty_df, valid_train, empty_df, idrid_seg=valid_seg, validation_mode="strict"
+    )
+    assert res_empty_te["is_leakage_free"] is False
+    assert "FAILED" in res_empty_te["overall_status"]
+    assert any(c["name"] == "IDRiD Test Set Integrity" and c["status"] == "FAILED" for c in res_empty_te["checks"])
+
+    # 3. Empty IDRiD Seg in strict mode must FAIL
+    res_empty_seg = verify_splits_leakage(
+        empty_df, empty_df, valid_train, valid_test, idrid_seg=empty_df, validation_mode="strict"
+    )
+    assert res_empty_seg["is_leakage_free"] is False
+    assert "FAILED" in res_empty_seg["overall_status"]
+    assert any(c["name"] == "IDRiD Segmentation Set Integrity" and c["status"] == "FAILED" for c in res_empty_seg["checks"])
+
+    # 4. generate_report must reflect FAILED pipeline status when is_leakage_free is False
+    out_rep = tmp_path / "failed_report.md"
+    generate_report(empty_df, empty_df, empty_df, valid_test, valid_seg, res_empty_tr, out_rep)
+    rep_text = out_rep.read_text(encoding="utf-8")
+    assert "- **Pipeline Status:** `FAILED` ❌" in rep_text
+    assert "`SUCCESS`" not in rep_text
+
+
 def test_evaluate_fov_mask_quality():
     """Verify evaluate_fov_mask_quality detects valid masks and flags anomalies."""
     from src.preprocessing import evaluate_fov_mask_quality
@@ -453,7 +494,7 @@ def test_evaluate_fov_mask_quality():
     assert res_empty["status"] == "FAILED"
     assert "EMPTY_FOV" in res_empty["flags"]
 
-    # 3. Unusually small FOV (< 20%)
+    # 3. Unusually small FOV (< 50%)
     small_mask = ((y - 50)**2 + (x - 50)**2 <= 10**2).astype(np.uint8)
     res_small = evaluate_fov_mask_quality(img, small_mask)
     assert res_small["status"] == "FAILED"
@@ -466,6 +507,17 @@ def test_evaluate_fov_mask_quality():
     res_leak = evaluate_fov_mask_quality(img, leak_mask, pad_offsets=pad_offsets)
     assert res_leak["status"] == "FAILED"
     assert "PADDING_LEAK" in res_leak["flags"]
+
+    # 5. Dimension mismatch raises ValueError
+    dim_mismatch = np.zeros((50, 50), dtype=np.uint8)
+    with pytest.raises(ValueError, match="does not match FOV mask shape"):
+        evaluate_fov_mask_quality(img, dim_mismatch)
+
+    # 6. Non-binary values raise ValueError
+    bad_vals = valid_mask.copy().astype(np.uint8)
+    bad_vals[50, 50] = 128  # neither 0 nor 1
+    with pytest.raises(ValueError, match="must be strictly binary"):
+        evaluate_fov_mask_quality(img, bad_vals)
 
 
 def test_run_fov_quality_control(tmp_path: Path):

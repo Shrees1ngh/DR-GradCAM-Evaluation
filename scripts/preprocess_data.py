@@ -399,6 +399,7 @@ def preprocess_idrid(
         project_root=PROJECT_ROOT,
         output_csv=PROJECT_ROOT / "reports" / "fov_qc_report.csv",
         output_md=PROJECT_ROOT / "reports" / "fov_qc_report.md",
+        montage_path=PROJECT_ROOT / "reports" / "fov_montage_81.png",
     )
 
     return idrid_train_df, idrid_test_df, idrid_seg_df
@@ -560,12 +561,21 @@ def verify_splits_leakage(
                 "details": f"IDRiD Train ({len(idrid_tr_ids)}) and Test ({len(idrid_te_ids)}) cohorts are 100% disjoint (0 overlapping image identities).",
             })
     else:
-        checks.append({
-            "name": "IDRiD Cohort Isolation",
-            "target": "IDRiD Train vs Test",
-            "status": "SKIPPED",
-            "details": "IDRiD cohort isolation check skipped (insufficient records).",
-        })
+        if validation_mode == "strict":
+            has_failure = True
+            checks.append({
+                "name": "IDRiD Cohort Isolation",
+                "target": "IDRiD Train vs Test",
+                "status": "FAILED",
+                "details": f"Cannot verify IDRiD cohort isolation in strict mode: empty or missing cohort(s) (Train: {len(idrid_train)}, Test: {len(idrid_test)}).",
+            })
+        else:
+            checks.append({
+                "name": "IDRiD Cohort Isolation",
+                "target": "IDRiD Train vs Test",
+                "status": "SKIPPED",
+                "details": "IDRiD cohort isolation check skipped (insufficient records).",
+            })
 
     # Check 3: IDRiD Training Set Count
     if len(idrid_train) > 0:
@@ -593,12 +603,21 @@ def verify_splits_leakage(
                 "details": f"Test mode: IDRiD training count {len(idrid_train)} accepted for test fixture.",
             })
     else:
-        checks.append({
-            "name": "IDRiD Training Set Integrity",
-            "target": "IDRiD Grading Training Set (N=413)",
-            "status": "SKIPPED",
-            "details": "IDRiD training set check skipped (0 images).",
-        })
+        if validation_mode == "strict":
+            has_failure = True
+            checks.append({
+                "name": "IDRiD Training Set Integrity",
+                "target": "IDRiD Grading Training Set (N=413)",
+                "status": "FAILED",
+                "details": "Missing or empty IDRiD training data in strict mode (0 found vs 413 expected).",
+            })
+        else:
+            checks.append({
+                "name": "IDRiD Training Set Integrity",
+                "target": "IDRiD Grading Training Set (N=413)",
+                "status": "SKIPPED",
+                "details": "IDRiD training set check skipped (0 images).",
+            })
 
     # Check 4: IDRiD Test Set Count
     if len(idrid_test) > 0:
@@ -626,12 +645,21 @@ def verify_splits_leakage(
                 "details": f"Test mode: IDRiD test count {len(idrid_test)} accepted for test fixture.",
             })
     else:
-        checks.append({
-            "name": "IDRiD Test Set Integrity",
-            "target": "IDRiD External Test Benchmark (N=103)",
-            "status": "SKIPPED",
-            "details": "IDRiD test set check skipped (0 images).",
-        })
+        if validation_mode == "strict":
+            has_failure = True
+            checks.append({
+                "name": "IDRiD Test Set Integrity",
+                "target": "IDRiD External Test Benchmark (N=103)",
+                "status": "FAILED",
+                "details": "Missing or empty IDRiD test data in strict mode (0 found vs 103 expected).",
+            })
+        else:
+            checks.append({
+                "name": "IDRiD Test Set Integrity",
+                "target": "IDRiD External Test Benchmark (N=103)",
+                "status": "SKIPPED",
+                "details": "IDRiD test set check skipped (0 images).",
+            })
 
     # Check 5: IDRiD Segmentation Set Count
     if idrid_seg is not None and len(idrid_seg) > 0:
@@ -658,13 +686,22 @@ def verify_splits_leakage(
                 "status": "PASSED",
                 "details": f"Test mode: IDRiD segmentation count {len(idrid_seg)} accepted for test fixture.",
             })
-    elif idrid_seg is not None:
-        checks.append({
-            "name": "IDRiD Segmentation Set Integrity",
-            "target": "IDRiD Segmentation Dataset (N=81)",
-            "status": "SKIPPED",
-            "details": "IDRiD segmentation set check skipped (0 images).",
-        })
+    else:
+        if validation_mode == "strict":
+            has_failure = True
+            checks.append({
+                "name": "IDRiD Segmentation Set Integrity",
+                "target": "IDRiD Segmentation Dataset (N=81)",
+                "status": "FAILED",
+                "details": f"Missing or empty IDRiD segmentation data in strict mode ({len(idrid_seg) if idrid_seg is not None else 0} found vs 81 expected).",
+            })
+        else:
+            checks.append({
+                "name": "IDRiD Segmentation Set Integrity",
+                "target": "IDRiD Segmentation Dataset (N=81)",
+                "status": "SKIPPED",
+                "details": "IDRiD segmentation set check skipped (0 images).",
+            })
 
     # Overall Summary Status
     all_statuses = [c["status"] for c in checks]
@@ -694,9 +731,18 @@ def generate_report(
     output_path: Path,
 ) -> None:
     """Generate Markdown report summarizing Phase 2 preprocessing and splits."""
-    cohort_train_c = int((idrid_seg["cohort_origin"] == "idrid_grading_train_cohort").sum())
-    cohort_test_c = int((idrid_seg["cohort_origin"] == "idrid_grading_test_cohort").sum())
-    cohort_unique_c = int((idrid_seg["cohort_origin"] == "idrid_seg_unique").sum())
+    has_cohort = idrid_seg is not None and not idrid_seg.empty and "cohort_origin" in idrid_seg.columns
+    cohort_train_c = int((idrid_seg["cohort_origin"] == "idrid_grading_train_cohort").sum()) if has_cohort else 0
+    cohort_test_c = int((idrid_seg["cohort_origin"] == "idrid_grading_test_cohort").sum()) if has_cohort else 0
+    cohort_unique_c = int((idrid_seg["cohort_origin"] == "idrid_seg_unique").sum()) if has_cohort else 0
+
+    if leakage_info.get("is_leakage_free", False):
+        if any(c["status"] == "SKIPPED" for c in leakage_info.get("checks", [])):
+            pipeline_status = "`PARTIALLY EVALUATED (IDRiD Only)` ⏭️"
+        else:
+            pipeline_status = "`SUCCESS` ✅"
+    else:
+        pipeline_status = "`FAILED` ❌"
 
     lines = [
         "# Data Preparation & Preprocessing Report — Phase 2",
@@ -708,7 +754,7 @@ def generate_report(
         "",
         "## 1. Executive Summary",
         "",
-        f"- **Pipeline Status:** `SUCCESS` ✅",
+        f"- **Pipeline Status:** {pipeline_status}",
         f"- **Data Leakage Check:** `{leakage_info['overall_status']}`",
         f"- **Target Resolution:** `512 x 512` (Preserving native aspect ratio with symmetric zero-padding)",
         f"- **Primary Training Set (APTOS 80%):** {len(aptos_train)} images",
@@ -784,9 +830,12 @@ def generate_report(
         ("SE", "Soft Exudates"),
         ("OD", "Optic Disc (landmark control)"),
     ]:
-        ann_cnt = int(idrid_seg[f"annotated_{code}"].sum())
-        miss_cnt = len(idrid_seg) - ann_cnt
-        if "pixel_count_" + code in idrid_seg.columns:
+        if idrid_seg is not None and f"annotated_{code}" in idrid_seg.columns:
+            ann_cnt = int(idrid_seg[f"annotated_{code}"].sum())
+        else:
+            ann_cnt = 0
+        miss_cnt = len(idrid_seg) - ann_cnt if idrid_seg is not None else 0
+        if idrid_seg is not None and "pixel_count_" + code in idrid_seg.columns:
             zero_cnt = int(((idrid_seg[f"annotated_{code}"] == True) & (idrid_seg[f"pixel_count_{code}"] == 0)).sum())
             pos_cnt = int(((idrid_seg[f"annotated_{code}"] == True) & (idrid_seg[f"pixel_count_{code}"] > 0)).sum())
         else:
