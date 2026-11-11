@@ -538,13 +538,13 @@ These are not in our submitted synopsis. So we should not promise them in the re
 **Deliverable:** Faithfulness evaluation pipeline.
 
 ### Phase 8 — Statistical Analysis & Research Findings
-* Localization vs faithfulness comparison.
-* Spearman correlation.
-* Grade-wise statistical analysis.
-* Confidence intervals and p-values.
-* Tables, graphs and interpretation.
-* Findings and limitations document karna.  
-**Deliverable:** Complete experimental results.
+* Primary Hypothesis Testing: Spearman rank correlation ($\rho$) between Composite Dice (top 10% saliency within retinal FOV) and Faithfulness Net Margin (normalized trapezoidal partial-AUC).
+* 95% bootstrap confidence intervals ($B=2000$) and two-sided $p$-values.
+* Cohort isolation: Primary Cohort ($N=78$: 57 train + 21 unique [grade=None included in overall correlation, excluded from grade breakdowns]) vs Supplementary Cohort ($N=3$: IDRiD_09, 22, 31).
+* Grade-wise subgroup analysis across ICDR grades 1–4 ($N \ge 5$) with Benjamini-Hochberg FDR adjustment.
+* Negative Control validation: Optic Disc (OD) correlation verified near-zero or negative.
+* High-resolution publication scatter plot with regression trendline and 95% confidence bands (`reports/figures/phase_8_correlation_plot.png`).
+**Deliverable:** `scripts/analyze_results.py`, `reports/phase_8_statistical_analysis_report.md`, `.json`, and figure.
 
 ### Phase 9 — Finalization & Presentation
 * Complete research paper.

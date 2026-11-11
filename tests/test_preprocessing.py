@@ -687,15 +687,100 @@ def test_validate_segmentation_masks_valid_and_invalid(tmp_path: Path):
     with pytest.raises(ValueError, match="missing required presence metadata column 'lesion_present_MA'"):
         validate_segmentation_masks(df_no_pres, project_root=tmp_path, target_size=(512, 512))
 
-    # Case: Non-integer pixel count raises ValueError
-    df_non_int_cnt = pd.DataFrame([{**row_valid, "pixel_count_MA": "invalid_number"}])
-    with pytest.raises(ValueError, match="invalid non-integer pixel_count"):
-        validate_segmentation_masks(df_non_int_cnt, project_root=tmp_path, target_size=(512, 512))
+    # Case: Fractional pixel count raises ValueError
+    df_frac_cnt = pd.DataFrame([{**row_valid, "pixel_count_MA": 500.5}])
+    with pytest.raises(ValueError, match="fractional pixel count not allowed"):
+        validate_segmentation_masks(df_frac_cnt, project_root=tmp_path, target_size=(512, 512))
 
-    # Case: Non-integer composite pixel count raises ValueError
-    df_non_int_comp = pd.DataFrame([{**row_valid, "composite_pixels": "bad_count"}])
-    with pytest.raises(ValueError, match="invalid non-integer composite pixel count"):
-        validate_segmentation_masks(df_non_int_comp, project_root=tmp_path, target_size=(512, 512))
+    df_frac_cnt_str = pd.DataFrame([{**row_valid, "pixel_count_MA": "500.5"}])
+    with pytest.raises(ValueError, match="fractional pixel count not allowed"):
+        validate_segmentation_masks(df_frac_cnt_str, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Boolean value used as pixel count raises ValueError
+    df_bool_cnt = pd.DataFrame([{**row_valid, "pixel_count_MA": True}])
+    with pytest.raises(ValueError, match="boolean value not allowed for integer count"):
+        validate_segmentation_masks(df_bool_cnt, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Invalid boolean string for lesion_present raises ValueError
+    df_bad_bool_pres = pd.DataFrame([{**row_valid, "lesion_present_MA": "maybe"}])
+    with pytest.raises(ValueError, match="ambiguous or invalid boolean string 'maybe'"):
+        validate_segmentation_masks(df_bad_bool_pres, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Missing presence column completely raises ValueError
+    row_no_pres_col = {**row_valid}
+    del row_no_pres_col["lesion_present_MA"]
+    df_no_pres_col = pd.DataFrame([row_no_pres_col])
+    with pytest.raises(ValueError, match="missing required presence metadata column 'lesion_present_MA'"):
+        validate_segmentation_masks(df_no_pres_col, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Same pixel count but different composite pixels raises ValueError
+    # Create composite mask with 500 pixels in a different location (shifted)
+    m_shifted_arr = np.zeros((512, 512), dtype=np.uint8)
+    m_shifted_arr[100:150, 0:10] = 255  # 500 pixels, but at y=100..150 instead of y=0..50
+    p_comp_shifted = mask_dir / "m_comp_shifted.png"
+    Image.fromarray(m_shifted_arr).save(p_comp_shifted)
+    df_shifted_comp = pd.DataFrame([{**row_valid, "mask_composite": str(p_comp_shifted.relative_to(tmp_path))}])
+    with pytest.raises(ValueError, match="composite mask does not match the pixel-wise logical union"):
+        validate_segmentation_masks(df_shifted_comp, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Accidental inclusion of OD pixels raises ValueError
+    m_od_arr = np.zeros((512, 512), dtype=np.uint8)
+    m_od_arr[200:250, 200:210] = 255  # 500 OD pixels
+    p_od = mask_dir / "m_od.png"
+    Image.fromarray(m_od_arr).save(p_od)
+
+    # Composite mask that includes MA (500 px) AND OD (500 px) -> 1000 px
+    m_comp_od_arr = m_ma_arr | m_od_arr
+    p_comp_od = mask_dir / "m_comp_od.png"
+    Image.fromarray(m_comp_od_arr).save(p_comp_od)
+
+    df_od_leak = pd.DataFrame([{
+        **row_valid,
+        "mask_OD": str(p_od.relative_to(tmp_path)),
+        "annotated_OD": True,
+        "pixel_count_OD": 500,
+        "lesion_present_OD": True,
+        "mask_composite": str(p_comp_od.relative_to(tmp_path)),
+        "composite_pixels": 1000,
+    }])
+    with pytest.raises(ValueError, match="improperly includes Optic Disc"):
+        validate_segmentation_masks(df_od_leak, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Correctly annotated zero-pixel masks pass validation
+    p_zero_ma = mask_dir / "m_zero_ma.png"
+    Image.fromarray(np.zeros((512, 512), dtype=np.uint8)).save(p_zero_ma)
+    p_zero_comp = mask_dir / "m_zero_comp.png"
+    Image.fromarray(np.zeros((512, 512), dtype=np.uint8)).save(p_zero_comp)
+    df_zero_pixel = pd.DataFrame([{
+        "image_id": "seg_zero",
+        "mask_MA": str(p_zero_ma.relative_to(tmp_path)),
+        "annotated_MA": True,
+        "pixel_count_MA": 0,
+        "lesion_present_MA": False,
+        "mask_HE": str(p_zero_ma.relative_to(tmp_path)),
+        "annotated_HE": True,
+        "pixel_count_HE": 0,
+        "lesion_present_HE": False,
+        "mask_EX": "",
+        "annotated_EX": False,
+        "pixel_count_EX": -1,
+        "lesion_present_EX": None,
+        "mask_SE": "",
+        "annotated_SE": False,
+        "pixel_count_SE": -1,
+        "lesion_present_SE": None,
+        "mask_OD": "",
+        "annotated_OD": False,
+        "pixel_count_OD": -1,
+        "lesion_present_OD": None,
+        "mask_composite": str(p_zero_comp.relative_to(tmp_path)),
+        "composite_pixels": 0,
+    }])
+    res_zero = validate_segmentation_masks(df_zero_pixel, project_root=tmp_path, target_size=(512, 512))
+    assert res_zero["status"] == "PASSED"
+    assert res_zero["annotated_counts"]["MA"] == 1
+    assert res_zero["annotated_counts"]["HE"] == 1
+
 
 
 def test_run_fov_quality_control_first_missing_regression(tmp_path: Path):

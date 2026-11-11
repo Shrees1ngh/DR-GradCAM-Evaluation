@@ -14,6 +14,7 @@ import torch.nn as nn
 from src.faithfulness import (
     aggregate_faithfulness_scores,
     apply_ablation_mask,
+    compute_normalized_pauc,
     evaluate_progressive_deletion,
     generate_fov_restricted_salient_mask,
     generate_random_ablation_mask,
@@ -588,5 +589,155 @@ def test_matched_grade_completeness_and_cohort_assignment(tmp_path: Path):
             train_manifest_path=mock_train_csv,
             test_manifest_path=incomplete_test_csv,
         )
+
+
+# ---------------------------------------------------------------------------
+# 7. Normalized Partial-AUC (pAUC) Hand-Calculated & Metric Tests
+# ---------------------------------------------------------------------------
+
+def test_compute_normalized_pauc_hand_calculated():
+    """Verify compute_normalized_pauc against hand-calculated values and contrast with discrete mean."""
+    # Scenario: steps = [0.10, 0.20, 0.30], drops = [0.20, 0.40, 0.60]
+    # Anchored at (x=0, y=0):
+    # Trap 1: (0, 0) to (0.10, 0.20) -> area = 0.5 * (0 + 0.20) * 0.10 = 0.010
+    # Trap 2: (0.10, 0.20) to (0.20, 0.40) -> area = 0.5 * (0.20 + 0.40) * 0.10 = 0.030
+    # Trap 3: (0.20, 0.40) to (0.30, 0.60) -> area = 0.5 * (0.40 + 0.60) * 0.10 = 0.050
+    # Total area = 0.010 + 0.030 + 0.050 = 0.090
+    # x_max = 0.30
+    # Normalized pAUC = 0.090 / 0.30 = 0.30
+    # In contrast, discrete mean is (0.20 + 0.40 + 0.60) / 3 = 0.40
+    steps = [0.10, 0.20, 0.30]
+    drops = [0.20, 0.40, 0.60]
+
+    pauc = compute_normalized_pauc(steps, drops)
+    assert pytest.approx(pauc, abs=1e-6) == 0.30
+    assert pytest.approx(np.mean(drops), abs=1e-6) == 0.40
+    assert pauc != np.mean(drops)
+
+
+def test_compute_normalized_pauc_single_step():
+    """Verify compute_normalized_pauc with a single step."""
+    # Anchored at (0, 0) to (0.20, 0.50):
+    # Area = 0.5 * (0 + 0.50) * 0.20 = 0.050
+    # Normalized pAUC = 0.050 / 0.20 = 0.25
+    steps = [0.20]
+    drops = [0.50]
+    pauc = compute_normalized_pauc(steps, drops)
+    assert pytest.approx(pauc, abs=1e-6) == 0.25
+
+
+def test_compute_normalized_pauc_edge_cases():
+    """Verify error handling on invalid steps/drops inputs."""
+    assert compute_normalized_pauc([], []) == 0.0
+
+    with pytest.raises(ValueError, match="same non-zero length"):
+        compute_normalized_pauc([0.1, 0.2], [0.1])
+
+    with pytest.raises(ValueError, match="strictly positive and monotonically increasing"):
+        compute_normalized_pauc([0.2, 0.1], [0.1, 0.2])
+
+    with pytest.raises(ValueError, match="strictly positive and monotonically increasing"):
+        compute_normalized_pauc([0.0, 0.1], [0.1, 0.2])
+
+
+def test_evaluate_progressive_deletion_includes_pauc_and_discrete_mean():
+    """Verify evaluate_progressive_deletion calculates both normalized pAUC and discrete mean."""
+    model = DummyModel()
+    model.eval()
+
+    img = np.ones((60, 60, 3), dtype=np.uint8) * 128
+    heatmap = np.zeros((60, 60), dtype=np.float32)
+    heatmap[10:30, 10:30] = 1.0  # Salient peak
+    fov_mask = np.ones((60, 60), dtype=np.uint8)
+
+    res = evaluate_progressive_deletion(
+        model=model,
+        image_rgb=img,
+        heatmap=heatmap,
+        target_class=0,
+        valid_fov_mask=fov_mask,
+        device=torch.device("cpu"),
+        image_id="test_img_pauc",
+        true_grade=2,
+        deletion_steps=[0.10, 0.20],
+        fill_strategies=["black"],
+        num_random_trials=2,
+        seed=123,
+    )
+
+    fill_res = res["evaluations_by_fill"]["black"]
+    assert "mean_deletion_drop_salient" in fill_res
+    assert "mean_deletion_drop_random" in fill_res
+    assert "mean_deletion_margin" in fill_res
+    assert "audc_salient" in fill_res
+    assert "audc_random" in fill_res
+    assert "audc_margin" in fill_res
+    assert "normalized_pauc_salient" in fill_res
+    assert "normalized_pauc_random" in fill_res
+    assert "normalized_pauc_margin" in fill_res
+
+    # Discrete mean matches audc aliases exactly
+    assert fill_res["mean_deletion_drop_salient"] == fill_res["audc_salient"]
+    assert fill_res["mean_deletion_drop_random"] == fill_res["audc_random"]
+    assert fill_res["mean_deletion_margin"] == fill_res["audc_margin"]
+
+    # Normalized pAUC margin = pauc_salient - pauc_random
+    expected_pauc_margin = fill_res["normalized_pauc_salient"] - fill_res["normalized_pauc_random"]
+    assert pytest.approx(fill_res["normalized_pauc_margin"], abs=1e-6) == expected_pauc_margin
+
+
+def test_aggregate_faithfulness_scores_includes_both_metrics():
+    """Verify aggregate_faithfulness_scores aggregates both discrete mean drop and normalized pAUC."""
+    results = [
+        {
+            "image_id": "img1",
+            "true_grade": 1,
+            "predicted_grade": 1,
+            "evaluations_by_fill": {
+                "black": {
+                    "mean_deletion_drop_salient": 0.30,
+                    "mean_deletion_drop_random": 0.10,
+                    "mean_deletion_margin": 0.20,
+                    "audc_salient": 0.30,
+                    "audc_random": 0.10,
+                    "audc_margin": 0.20,
+                    "normalized_pauc_salient": 0.25,
+                    "normalized_pauc_random": 0.08,
+                    "normalized_pauc_margin": 0.17,
+                    "overall_is_faithful": True,
+                }
+            },
+        },
+        {
+            "image_id": "img2",
+            "true_grade": 1,
+            "predicted_grade": 1,
+            "evaluations_by_fill": {
+                "black": {
+                    "mean_deletion_drop_salient": 0.40,
+                    "mean_deletion_drop_random": 0.20,
+                    "mean_deletion_margin": 0.20,
+                    "audc_salient": 0.40,
+                    "audc_random": 0.20,
+                    "audc_margin": 0.20,
+                    "normalized_pauc_salient": 0.35,
+                    "normalized_pauc_random": 0.16,
+                    "normalized_pauc_margin": 0.19,
+                    "overall_is_faithful": True,
+                }
+            },
+        },
+    ]
+
+    agg = aggregate_faithfulness_scores(results, primary_fill="black")
+    ov = agg["overall"]
+
+    assert "mean_deletion_margin" in ov
+    assert "audc_margin" in ov
+    assert "normalized_pauc_margin" in ov
+
+    assert pytest.approx(ov["mean_deletion_margin"]["mean"], abs=1e-6) == 0.20
+    assert pytest.approx(ov["normalized_pauc_margin"]["mean"], abs=1e-6) == 0.18
+
 
 

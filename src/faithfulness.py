@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
@@ -242,6 +242,57 @@ def run_single_deletion_step(
     return post_prob, ablated_rgb
 
 
+def compute_normalized_pauc(steps: Sequence[float], drops: Sequence[float]) -> float:
+    """Compute normalized trapezoidal partial-AUC anchored at baseline point (0, 0).
+
+    Formula:
+        pAUC = sum_{i=1}^M 0.5 * (y_{i-1} + y_i) * (x_i - x_{i-1})
+        normalized_pauc = pAUC / x_M
+
+    Normalized by maximum deletion fraction x_M so the resulting metric is dimensionally
+    consistent with confidence drop values in [0.0, 1.0].
+
+    Args:
+        steps: Sequence of ablation fractions, e.g. [0.10, 0.20, 0.30].
+        drops: Sequence of corresponding probability drops.
+
+    Returns:
+        float normalized partial-AUC in [0.0, 1.0].
+    """
+    if not steps and not drops:
+        return 0.0
+
+    if len(steps) != len(drops):
+        raise ValueError(
+            f"steps and drops must have the same non-zero length: got len(steps)={len(steps)}, len(drops)={len(drops)}"
+        )
+
+    for i, s in enumerate(steps):
+        if s <= 0.0:
+            raise ValueError(
+                f"steps must be strictly positive and monotonically increasing: non-positive step {s} at index {i}"
+            )
+        if i > 0 and s <= steps[i - 1]:
+            raise ValueError(
+                f"steps must be strictly positive and monotonically increasing: step {s} <= previous {steps[i-1]}"
+            )
+
+    x_vals = [0.0] + [float(s) for s in steps]
+    y_vals = [0.0] + [float(d) for d in drops]
+
+    x_max = x_vals[-1]
+    if x_max <= 0.0:
+        return 0.0
+
+    pauc = 0.0
+    for i in range(1, len(x_vals)):
+        dx = x_vals[i] - x_vals[i - 1]
+        y_avg = 0.5 * (y_vals[i - 1] + y_vals[i])
+        pauc += y_avg * dx
+
+    return float(pauc / x_max)
+
+
 def evaluate_progressive_deletion(
     model: Any,
     image_rgb: np.ndarray,
@@ -376,17 +427,31 @@ def evaluate_progressive_deletion(
                 "is_faithful_step": bool(margin > 0.0),
             })
 
-        # Calculate Area Under Deletion Curve (mean drop across steps)
-        audc_salient = float(np.mean(salient_drops)) if salient_drops else 0.0
-        audc_random = float(np.mean(random_drops)) if random_drops else 0.0
-        audc_margin = float(audc_salient - audc_random)
+        # 1. Discrete average confidence drops across evaluated steps
+        mean_s = float(np.mean(salient_drops)) if salient_drops else 0.0
+        mean_r = float(np.mean(random_drops)) if random_drops else 0.0
+        mean_m = float(mean_s - mean_r)
+
+        # 2. Normalized trapezoidal partial-AUC from baseline (0, 0)
+        pauc_s = compute_normalized_pauc(steps, salient_drops)
+        pauc_r = compute_normalized_pauc(steps, random_drops)
+        pauc_m = float(pauc_s - pauc_r)
 
         results["evaluations_by_fill"][fill] = {
             "steps": step_records,
-            "audc_salient": audc_salient,
-            "audc_random": audc_random,
-            "audc_margin": audc_margin,
-            "overall_is_faithful": bool(audc_margin > 0.0),
+            # Discrete mean drop metrics
+            "mean_deletion_drop_salient": mean_s,
+            "mean_deletion_drop_random": mean_r,
+            "mean_deletion_margin": mean_m,
+            # Backward-compatible aliases
+            "audc_salient": mean_s,
+            "audc_random": mean_r,
+            "audc_margin": mean_m,
+            # Normalized trapezoidal partial-AUC metrics
+            "normalized_pauc_salient": pauc_s,
+            "normalized_pauc_random": pauc_r,
+            "normalized_pauc_margin": pauc_m,
+            "overall_is_faithful": bool(pauc_m > 0.0),
         }
 
     return results
@@ -428,8 +493,14 @@ def aggregate_faithfulness_scores(
     all_audc_salient = []
     all_audc_random = []
     all_audc_margins = []
+    all_pauc_salient = []
+    all_pauc_random = []
+    all_pauc_margins = []
     faithful_count = 0
 
+    grade_pauc_margins: Dict[int, List[float]] = {g: [] for g in range(5)}
+    grade_pauc_salient: Dict[int, List[float]] = {g: [] for g in range(5)}
+    grade_pauc_random: Dict[int, List[float]] = {g: [] for g in range(5)}
     grade_audc_margins: Dict[int, List[float]] = {g: [] for g in range(5)}
     grade_salient_drops: Dict[int, List[float]] = {g: [] for g in range(5)}
     grade_random_drops: Dict[int, List[float]] = {g: [] for g in range(5)}
@@ -438,13 +509,21 @@ def aggregate_faithfulness_scores(
         g = r.get("true_grade")
         fill_eval = r["evaluations_by_fill"].get(primary_fill, {})
 
-        audc_s = fill_eval.get("audc_salient", 0.0)
-        audc_r = fill_eval.get("audc_random", 0.0)
-        audc_m = fill_eval.get("audc_margin", 0.0)
+        audc_s = fill_eval.get("mean_deletion_drop_salient", fill_eval.get("audc_salient", 0.0))
+        audc_r = fill_eval.get("mean_deletion_drop_random", fill_eval.get("audc_random", 0.0))
+        audc_m = fill_eval.get("mean_deletion_margin", fill_eval.get("audc_margin", 0.0))
+
+        pauc_s = fill_eval.get("normalized_pauc_salient", audc_s)
+        pauc_r = fill_eval.get("normalized_pauc_random", audc_r)
+        pauc_m = fill_eval.get("normalized_pauc_margin", audc_m)
 
         all_audc_salient.append(audc_s)
         all_audc_random.append(audc_r)
         all_audc_margins.append(audc_m)
+
+        all_pauc_salient.append(pauc_s)
+        all_pauc_random.append(pauc_r)
+        all_pauc_margins.append(pauc_m)
 
         if fill_eval.get("overall_is_faithful", False):
             faithful_count += 1
@@ -453,6 +532,9 @@ def aggregate_faithfulness_scores(
             grade_audc_margins[g].append(audc_m)
             grade_salient_drops[g].append(audc_s)
             grade_random_drops[g].append(audc_r)
+            grade_pauc_margins[g].append(pauc_m)
+            grade_pauc_salient[g].append(pauc_s)
+            grade_pauc_random[g].append(pauc_r)
 
     def _calc_stats(arr: List[float]) -> Dict[str, Any]:
         if not arr:
@@ -470,6 +552,12 @@ def aggregate_faithfulness_scores(
         }
 
     summary["overall"] = {
+        "mean_deletion_drop_salient": _calc_stats(all_audc_salient),
+        "mean_deletion_drop_random": _calc_stats(all_audc_random),
+        "mean_deletion_margin": _calc_stats(all_audc_margins),
+        "normalized_pauc_salient": _calc_stats(all_pauc_salient),
+        "normalized_pauc_random": _calc_stats(all_pauc_random),
+        "normalized_pauc_margin": _calc_stats(all_pauc_margins),
         "audc_salient": _calc_stats(all_audc_salient),
         "audc_random": _calc_stats(all_audc_random),
         "audc_margin": _calc_stats(all_audc_margins),
@@ -479,6 +567,12 @@ def aggregate_faithfulness_scores(
 
     for g in range(5):
         summary["grade_wise"][f"grade_{g}"] = {
+            "mean_deletion_drop_salient": _calc_stats(grade_salient_drops[g]),
+            "mean_deletion_drop_random": _calc_stats(grade_random_drops[g]),
+            "mean_deletion_margin": _calc_stats(grade_audc_margins[g]),
+            "normalized_pauc_salient": _calc_stats(grade_pauc_salient[g]),
+            "normalized_pauc_random": _calc_stats(grade_pauc_random[g]),
+            "normalized_pauc_margin": _calc_stats(grade_pauc_margins[g]),
             "audc_salient": _calc_stats(grade_salient_drops[g]),
             "audc_random": _calc_stats(grade_random_drops[g]),
             "audc_margin": _calc_stats(grade_audc_margins[g]),

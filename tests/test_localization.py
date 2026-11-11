@@ -633,5 +633,94 @@ def test_export_localization_predictions_csv(tmp_path: Path):
     assert df.loc[1, "cohort_origin"] == "idrid_seg_unique"
 
 
+def test_fov_aware_localization_rejects_invalid_masks():
+    """Verify evaluate_single_image_localization validates FOV mask integrity."""
+    from src.localization import evaluate_single_image_localization
+
+    h = np.zeros((100, 100), dtype=np.float32)
+    masks = {"composite": np.zeros((100, 100), dtype=np.uint8)}
+
+    # Shape mismatch
+    with pytest.raises(ValueError, match="does not match heatmap shape"):
+        evaluate_single_image_localization(
+            heatmap=h,
+            ground_truth_masks=masks,
+            image_id="img_err1",
+            fov_mask=np.zeros((50, 50), dtype=np.uint8),
+        )
+
+    # Non-binary mask
+    with pytest.raises(ValueError, match="strictly binary"):
+        evaluate_single_image_localization(
+            heatmap=h,
+            ground_truth_masks=masks,
+            image_id="img_err2",
+            fov_mask=np.ones((100, 100), dtype=np.uint8) * 128,
+        )
+
+    # Empty FOV mask
+    with pytest.raises(ValueError, match="FOV mask is empty"):
+        evaluate_single_image_localization(
+            heatmap=h,
+            ground_truth_masks=masks,
+            image_id="img_err3",
+            fov_mask=np.zeros((100, 100), dtype=np.uint8),
+        )
+
+
+def test_fov_aware_localization_masks_out_external_activations():
+    """Verify strong artificial heatmap activations outside retinal FOV cannot influence localization."""
+    from src.localization import evaluate_single_image_localization
+
+    # Canvas 100x100. Retinal circular FOV centered with radius 35 (covers ~3849 pixels)
+    y, x = np.ogrid[:100, :100]
+    fov = ((y - 50)**2 + (x - 50)**2 <= 35**2).astype(np.uint8)
+    n_fov = int(np.sum(fov))
+
+    # Construct lesion ground truth inside FOV: 50 pixels near center
+    lesion_mask = np.zeros((100, 100), dtype=np.uint8)
+    lesion_mask[48:53, 45:55] = 1
+    masks = {"composite": lesion_mask, "MA": lesion_mask}
+
+    # Construct heatmap with massive false activation OUTSIDE FOV (in black border padding)
+    heatmap = np.zeros((100, 100), dtype=np.float32)
+    heatmap[0:15, 0:15] = 1.0  # 225 pixels with peak 1.0 outside FOV!
+
+    # Inside FOV, modest activation (0.8) exactly on the lesion
+    heatmap[48:53, 45:55] = 0.8
+
+    # 1. Without FOV awareness: top 2% over entire canvas (200 pixels) selects only the 225 border pixels
+    res_no_fov = evaluate_single_image_localization(
+        heatmap=heatmap,
+        ground_truth_masks=masks,
+        image_id="no_fov",
+        grade=2,
+        thresholds=[0.02],
+        fov_mask=None,
+    )
+    # The lesion has 0 overlap because outside peak dominates
+    assert res_no_fov["metrics_by_threshold"]["top_2_pct"]["lesions"]["composite"]["iou"] == 0.0
+
+    # 2. With FOV awareness: border pixels are completely excluded
+    res_fov = evaluate_single_image_localization(
+        heatmap=heatmap,
+        ground_truth_masks=masks,
+        image_id="with_fov",
+        grade=2,
+        thresholds=[0.02],
+        fov_mask=fov,
+    )
+    m_fov = res_fov["metrics_by_threshold"]["top_2_pct"]
+    # Exactly round(0.02 * n_fov) pixels selected inside FOV
+    exp_k = int(round(0.02 * n_fov))
+    assert m_fov["salient_pixel_count"] == exp_k
+    # Saliency successfully selected the lesion inside FOV
+    assert m_fov["lesions"]["composite"]["iou"] > 0.0
+    assert m_fov["lesions"]["composite"]["dice"] > 0.0
+    assert res_fov["fov_aware"] is True
+    assert res_fov["fov_pixel_count"] == n_fov
+
+
+
 
 

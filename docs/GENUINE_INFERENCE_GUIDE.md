@@ -168,7 +168,32 @@ python scripts/evaluate_faithfulness.py \
 
 ---
 
-## 7. Complete Google Colab Execution Notebook
+## 7. Step 6: Run Genuine Phase 8 Statistical Analysis & Hypothesis Testing
+
+Evaluate whether visual lesion localization correlates with internal decision fidelity:
+
+```bash
+python scripts/analyze_results.py \
+    --localization-csv reports/phase_6_localization_predictions.csv \
+    --faithfulness-csv reports/faithfulness_predictions.csv \
+    --localization-json reports/phase_6_localization_report.json \
+    --faithfulness-json reports/phase_7_faithfulness_report.json
+```
+
+### Key Guarantees & Statistical Analysis:
+1. **Primary Hypothesis Test:** Spearman rank correlation ($\rho$) between Composite Dice at top 10% saliency within the valid retinal FOV and the Faithfulness Net Margin (normalized trapezoidal partial-AUC margin).
+2. **Bootstrap Confidence Intervals:** 95% bootstrap confidence intervals ($B=2000$, fixed seed 42) for robust non-parametric uncertainty estimation.
+3. **Cohort Isolation ($N=78$ Primary, $N=3$ Supplementary):** Primary hypothesis testing evaluates the 78 non-overlapping segmentation images. The 3 test-overlapping images are analyzed separately.
+4. **Grade-Wise Stratification & FDR Correction:** Subgroup analyses for verified ICDR grades 1–4 ($N \ge 5$) with Benjamini-Hochberg False Discovery Rate (FDR) adjustments. The 21 unique images (`true_grade = None`) are included in overall primary correlations but excluded from grade subgroups.
+5. **Negative Control Validation:** Optic Disc (OD) localization is verified as a negative control; expected near-zero or negative correlation with faithfulness.
+6. **Outputs Generated:**
+   - Detailed Markdown: `reports/phase_8_statistical_analysis_report.md`
+   - Structured JSON: `reports/phase_8_statistical_analysis_report.json`
+   - High-Resolution Figure: `reports/figures/phase_8_correlation_plot.png`
+
+---
+
+## 8. Complete Google Colab Execution Notebook
 
 Copy-paste these exact code blocks into your Google Colab notebook with GPU runtime enabled (**Runtime > Change runtime type > T4 GPU**):
 
@@ -245,7 +270,16 @@ if os.path.exists(DRIVE_IDRID_ZIP):
     --num-random-trials 5
 ```
 
-### Cell 8: Sync Reports and Predictions Back to Google Drive
+### Cell 8: Run Genuine Phase 8 Statistical Analysis & Hypothesis Testing
+```python
+!python scripts/analyze_results.py \
+    --localization-csv reports/phase_6_localization_predictions.csv \
+    --faithfulness-csv reports/faithfulness_predictions.csv \
+    --localization-json reports/phase_6_localization_report.json \
+    --faithfulness-json reports/phase_7_faithfulness_report.json
+```
+
+### Cell 9: Sync Reports and Predictions Back to Google Drive
 ```python
 DRIVE_REPORTS = "/content/drive/MyDrive/DR-GradCAM-Evaluation/reports"
 os.makedirs(DRIVE_REPORTS, exist_ok=True)

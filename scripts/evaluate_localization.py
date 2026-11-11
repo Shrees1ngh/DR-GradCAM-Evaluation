@@ -60,7 +60,7 @@ from src.dataset import IMAGENET_MEAN, IMAGENET_STD, SegmentationLesionDataset
 from src.explainability import GradCAM, binarize_heatmap, generate_gradcam_overlay
 from src.localization import aggregate_localization_scores, evaluate_single_image_localization
 from src.model import ICDR_GRADES, build_model
-from src.preprocessing import validate_segmentation_masks
+from src.preprocessing import extract_retinal_fov_mask, validate_segmentation_masks
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -663,6 +663,9 @@ def main() -> int:
         if args.dry_run:
             logging.info("Manifest not found on disk. Generating synthetic records for all 81 segmentation images (78 primary, 3 supplementary)...")
             results = []
+            y_grid, x_grid = np.ogrid[:512, :512]
+            dry_fov = ((y_grid - 256)**2 + (x_grid - 256)**2 <= 240**2).astype(np.uint8)
+
             # 81 images: 57 train-matched (grades 1-4), 3 test-matched (grades 1-4), 21 unique (grade=None)
             for i in range(81):
                 h = np.random.rand(512, 512).astype(np.float32)
@@ -685,6 +688,7 @@ def main() -> int:
                     grade=g,
                     thresholds=thresholds,
                     cohort_origin=co,
+                    fov_mask=dry_fov,
                 )
                 results.append(res)
 
@@ -814,6 +818,25 @@ def main() -> int:
             else:
                 grade_val = seg_grade_map.get(img_stem)
 
+            # Load precomputed FOV mask from preprocessing or derive via extract_retinal_fov_mask
+            valid_fov_mask = None
+            fov_path_str = row.get("mask_fov") or row.get("fov_mask_path")
+            if fov_path_str and pd.notna(fov_path_str):
+                cand_fov = PROJECT_ROOT / str(fov_path_str)
+                if cand_fov.exists():
+                    with Image.open(cand_fov) as fov_img:
+                        valid_fov_mask = (np.array(fov_img.convert("L")) > 0).astype(np.uint8)
+
+            if valid_fov_mask is None:
+                pad_offsets = None
+                if "pad_offsets" in row and pd.notna(row["pad_offsets"]):
+                    try:
+                        import ast
+                        pad_offsets = tuple(ast.literal_eval(str(row["pad_offsets"])))
+                    except Exception:
+                        pad_offsets = None
+                valid_fov_mask = extract_retinal_fov_mask(raw_rgb, pad_offsets=pad_offsets)
+
             img_res = evaluate_single_image_localization(
                 heatmap=heatmap,
                 ground_truth_masks=gt_masks,
@@ -822,6 +845,7 @@ def main() -> int:
                 thresholds=thresholds,
                 annotation_status=annotation_status,
                 cohort_origin=cohort_origin,
+                fov_mask=valid_fov_mask,
             )
             img_res["predicted_class"] = pred_class
             results.append(img_res)

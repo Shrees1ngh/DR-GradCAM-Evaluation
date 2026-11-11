@@ -19,6 +19,12 @@
 | [`reports/simulated_idrid_training_domain_diagnostic_report.json`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/simulated_idrid_training_domain_diagnostic_report.json) | `--dry-run` software test | **SIMULATED ⚠️** | Schema verification of serialized JSON diagnostic outputs |
 | [`reports/simulated_phase_6_localization_report.md`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/simulated_phase_6_localization_report.md) | `--dry-run` software test | **SIMULATED ⚠️** | Layout verification of Phase 6 localization report (78 primary, 3 supplementary) |
 | [`reports/simulated_phase_6_localization_report.json`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/simulated_phase_6_localization_report.json) | `--dry-run` software test | **SIMULATED ⚠️** | Schema verification of serialized JSON localization metrics |
+| [`reports/simulated_faithfulness_predictions.csv`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/simulated_faithfulness_predictions.csv) | `--dry-run` software test | **SIMULATED ⚠️** | Schema verification of Phase 7 progressive deletion predictions CSV |
+| [`reports/simulated_phase_7_faithfulness_report.md`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/simulated_phase_7_faithfulness_report.md) | `--dry-run` software test | **SIMULATED ⚠️** | Layout verification of Phase 7 decision faithfulness report |
+| [`reports/simulated_phase_7_faithfulness_report.json`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/simulated_phase_7_faithfulness_report.json) | `--dry-run` software test | **SIMULATED ⚠️** | Schema verification of serialized JSON faithfulness metrics |
+| [`reports/simulated_phase_8_statistical_analysis_report.md`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/simulated_phase_8_statistical_analysis_report.md) | `--dry-run` software test | **SIMULATED ⚠️** | Layout verification of Phase 8 statistical hypothesis testing report |
+| [`reports/simulated_phase_8_statistical_analysis_report.json`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/simulated_phase_8_statistical_analysis_report.json) | `--dry-run` software test | **SIMULATED ⚠️** | Schema verification of serialized JSON statistical analysis metrics |
+| [`reports/figures/simulated_phase_8_correlation_plot.png`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/reports/figures/simulated_phase_8_correlation_plot.png) | `--dry-run` software test | **SIMULATED ⚠️** | High-resolution scatter plot figure verification (300 DPI) |
 
 ---
 
@@ -41,16 +47,28 @@
    * **Pipeline Preprocessed Geometry:** The preprocessing pipeline applies `crop_to_retinal_fov`, excising the side-pillars and producing an approximately square cropped retina ($1.01:1$). The letterbox padding added by `resize_and_pad` is negligible ($\le 3\%$), with active retinal tissue covering $\sim 75\%$ of the $512 \times 512$ tensor.
 
 4. **Genuine Output Filenames:**
-   * Genuine diagnostic outputs must strictly be written to:
+   * Genuine diagnostic, evaluation, and analysis outputs must strictly be written to:
      - `reports/idrid_training_predictions.csv`
      - `reports/idrid_training_domain_diagnostic_report.md`
      - `reports/idrid_training_domain_diagnostic_report.json`
+     - `reports/phase_6_localization_predictions.csv`
      - `reports/phase_6_localization_report.md`
      - `reports/phase_6_localization_report.json`
+     - `reports/faithfulness_predictions.csv`
+     - `reports/phase_7_faithfulness_report.md`
+     - `reports/phase_7_faithfulness_report.json`
+     - `reports/phase_8_statistical_analysis_report.md`
+     - `reports/phase_8_statistical_analysis_report.json`
+     - `reports/figures/phase_8_correlation_plot.png`
 
-5. **Missing Input Policy:**
+5. **Optic Disc (OD) Negative Control & Severity Grade Mapping:**
+   * **OD Negative Control:** The Optic Disc is a normal anatomical landmark and serves as a negative control for localization and correlation. It must never be pooled into lesion composite masks (`composite = MA | HE | EX | SE`).
+   * **Grade 0 (No DR):** Contains no pathological lesions and is treated as N/A in localization overlap calculations.
+   * **Unique Segmentation Images:** The 21 unique images have unavailable grading labels (`true_grade = None`), never substituted with predicted grades. They are included in overall primary cohort analyses ($N = 78$) and excluded from grade-stratified breakdowns.
+
+6. **Missing Input Policy:**
    * If any required physical image file or checkpoint is missing on disk, scripts must **exit immediately with returncode 1**.
    * Simulated data generation in normal runtime is strictly forbidden.
 
-6. **Execution Instructions:**
+7. **Execution Instructions:**
    * See [`docs/GENUINE_INFERENCE_GUIDE.md`](file:///e:/diabeticretinopathy/DR-GradCAM-Evaluation/docs/GENUINE_INFERENCE_GUIDE.md) for full execution commands in GPU environments.

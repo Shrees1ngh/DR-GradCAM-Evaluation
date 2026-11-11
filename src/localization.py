@@ -119,10 +119,14 @@ def evaluate_single_image_localization(
     thresholds: Optional[List[float]] = None,
     annotation_status: Optional[Dict[str, bool]] = None,
     cohort_origin: str = "idrid_seg_unique",
+    fov_mask: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     """Evaluate localization overlap of a Grad-CAM heatmap across all lesion masks.
 
     Evaluates across multiple percentile thresholds (e.g. top 5%, 10%, 20%).
+    When fov_mask is provided, top percentile saliency selection is strictly calculated
+    within the valid retinal FOV, preventing spurious border activations from entering
+    the candidate set.
     Handles Grade 0 by designating all lesion overlaps as None / N/A.
     For images without verified grading labels (e.g. 21 unique segmentation images),
     grade is set to None (unavailable) and excluded from grade-wise stratification
@@ -139,6 +143,7 @@ def evaluate_single_image_localization(
                            (e.g., SE is unannotated in 41 IDRiD images).
         cohort_origin: Dataset cohort origin ('idrid_grading_train_cohort',
                        'idrid_grading_test_cohort', or 'idrid_seg_unique').
+        fov_mask: Optional binary mask (H, W) defining valid retinal field of view.
 
     Returns:
         Dictionary containing structured localization scores for each threshold & lesion.
@@ -148,19 +153,34 @@ def evaluate_single_image_localization(
 
     is_grade_0 = (int(grade) == 0) if grade is not None else False
 
+    if fov_mask is not None:
+        if fov_mask.shape != heatmap.shape:
+            raise ValueError(f"FOV mask shape {fov_mask.shape} does not match heatmap shape {heatmap.shape}")
+        if not set(np.unique(fov_mask)).issubset({0, 1, 255}):
+            raise ValueError("FOV mask must be strictly binary {0, 1} or {0, 255}")
+        fov_pixels = int(np.sum(fov_mask > 0))
+        if fov_pixels == 0:
+            raise ValueError("FOV mask is empty (0 positive pixels).")
+        fov_aware = True
+    else:
+        fov_pixels = heatmap.size
+        fov_aware = False
+
     eval_result: Dict[str, Any] = {
         "image_id": image_id,
         "grade": int(grade) if grade is not None else None,
         "is_grade_0": is_grade_0,
         "cohort_origin": cohort_origin,
         "thresholds": thresholds,
+        "fov_aware": fov_aware,
+        "fov_pixel_count": fov_pixels,
         "metrics_by_threshold": {},
     }
 
     # Evaluate each saliency cutoff threshold
     for t in thresholds:
         t_key = f"top_{int(round(t * 100))}_pct"
-        pred_binary = binarize_heatmap(heatmap, threshold=t, method="percentile")
+        pred_binary = binarize_heatmap(heatmap, threshold=t, method="percentile", fov_mask=fov_mask)
         pred_pixel_count = int(np.sum(pred_binary))
 
         t_metrics: Dict[str, Any] = {

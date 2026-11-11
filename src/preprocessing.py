@@ -744,6 +744,79 @@ def run_fov_quality_control(
     }
 
 
+def _parse_strict_int(val: Any, field_name: str, img_id: str) -> int:
+    """Parse integer strictly, rejecting booleans, fractionals, and ambiguous strings."""
+    # In Python, bool is a subclass of int: isinstance(True, int) is True!
+    if isinstance(val, (bool, np.bool_)):
+        raise ValueError(f"Image {img_id}: boolean value not allowed for integer count '{field_name}': {val}")
+
+    if isinstance(val, (float, np.floating)):
+        if np.isnan(val) or np.isinf(val):
+            raise ValueError(f"Image {img_id}: NaN/Inf value not allowed for integer count '{field_name}': {val}")
+        if not float(val).is_integer():
+            raise ValueError(f"Image {img_id}: fractional pixel count not allowed for '{field_name}': {val}")
+        return int(val)
+
+    if isinstance(val, (int, np.integer)):
+        return int(val)
+
+    if isinstance(val, str):
+        s = val.strip()
+        if s.lower() in {"true", "false"}:
+            raise ValueError(f"Image {img_id}: boolean string not allowed for integer count '{field_name}': {val}")
+        if "." in s:
+            try:
+                f_val = float(s)
+            except ValueError as e:
+                raise ValueError(f"Image {img_id}: invalid non-integer value for '{field_name}': {val}") from e
+            if not f_val.is_integer():
+                raise ValueError(f"Image {img_id}: fractional pixel count not allowed for '{field_name}': {val}")
+            return int(f_val)
+        try:
+            return int(s)
+        except ValueError as e:
+            raise ValueError(f"Image {img_id}: invalid non-integer value for '{field_name}': {val}") from e
+
+    raise ValueError(f"Image {img_id}: unsupported type {type(val)} for integer count '{field_name}': {val}")
+
+
+def _parse_strict_bool(val: Any, field_name: str, img_id: str, allow_none: bool = False) -> Optional[bool]:
+    """Parse boolean strictly, supporting only documented True/False and 1/0 representations."""
+    if pd.isna(val) or val is None:
+        if allow_none:
+            return None
+        raise ValueError(f"Image {img_id}: missing required boolean metadata '{field_name}'!")
+
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+
+    if isinstance(val, (int, np.integer)) and not isinstance(val, (bool, np.bool_)):
+        if val == 1:
+            return True
+        elif val == 0:
+            return False
+        raise ValueError(f"Image {img_id}: integer {val} not a valid boolean for '{field_name}' (expected 1 or 0)")
+
+    if isinstance(val, (float, np.floating)):
+        if val == 1.0:
+            return True
+        elif val == 0.0:
+            return False
+        raise ValueError(f"Image {img_id}: float {val} not a valid boolean for '{field_name}' (expected 1.0 or 0.0)")
+
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"true", "1"}:
+            return True
+        elif s in {"false", "0"}:
+            return False
+        elif s in {"none", "null", "nan", ""} and allow_none:
+            return None
+        raise ValueError(f"Image {img_id}: ambiguous or invalid boolean string '{val}' for '{field_name}'")
+
+    raise ValueError(f"Image {img_id}: unsupported type {type(val)} for boolean field '{field_name}'")
+
+
 def validate_segmentation_masks(
     manifest_df: pd.DataFrame,
     project_root: Optional[Path] = None,
@@ -757,10 +830,12 @@ def validate_segmentation_masks(
     3. Every mask has the exact expected target dimensions (target_size).
     4. Every mask is strictly binary with values in {0, 1} or {0, 255}.
     5. Actual positive pixel count strictly matches manifest pixel_count_{code}.
-    6. Rejects missing, invalid, negative, or inconsistent pixel counts and presence metadata.
-    7. Missing annotations remain distinguished (pixel_count = -1, lesion_present = None) from zero-lesion masks.
+    6. Rejects fractional pixel counts, booleans in place of counts, and invalid presence flags.
+    7. Missing annotations require pixel_count = -1 and lesion_present = null.
     8. Requires valid composite mask path and valid non-negative composite pixel-count metadata for every record.
     9. Compares recorded composite pixel counts with actual decoded composite mask pixel counts.
+    10. Enforces that composite mask is exactly the pixel-wise union of MA, HE, EX, and SE,
+        and strictly excludes OD.
 
     Args:
         manifest_df: DataFrame from segmentation_manifest.csv.
@@ -788,6 +863,7 @@ def validate_segmentation_masks(
 
     for idx, row in manifest_df.iterrows():
         img_id = str(row.get("image_id", f"row_{idx}"))
+        decoded_masks: Dict[str, np.ndarray] = {}
 
         for code in lesion_codes:
             mask_col = f"mask_{code}"
@@ -803,34 +879,31 @@ def validate_segmentation_masks(
                 raise ValueError(
                     f"Image {img_id}: missing required pixel-count metadata column '{cnt_col}' for lesion {code}!"
                 )
+            if pres_col not in row:
+                raise ValueError(
+                    f"Image {img_id}: missing required presence metadata column '{pres_col}' for lesion {code}!"
+                )
 
-            is_annotated = bool(row[ann_col])
+            is_annotated = _parse_strict_bool(row[ann_col], ann_col, img_id, allow_none=False)
 
             if not is_annotated:
                 missing_annotation_counts[code] += 1
-                try:
-                    exp_cnt = int(row[cnt_col])
-                except (ValueError, TypeError) as e:
-                    raise ValueError(
-                        f"Image {img_id}: invalid non-integer pixel_count for unannotated lesion {code}: {row[cnt_col]}"
-                    ) from e
+                exp_cnt = _parse_strict_int(row[cnt_col], cnt_col, img_id)
 
                 if exp_cnt != -1:
                     raise ValueError(
-                        f"Image {img_id}: unannotated lesion {code} must have pixel_count = -1, got {row[cnt_col]}"
+                        f"Image {img_id}: unannotated lesion {code} must have pixel_count = -1, got {exp_cnt}"
                     )
-                if pres_col in row and pd.notna(row[pres_col]):
+                pres_val = _parse_strict_bool(row[pres_col], pres_col, img_id, allow_none=True)
+                if pres_val is not None:
                     raise ValueError(
-                        f"Image {img_id}: unannotated lesion {code} must have lesion_present = None/NaN, got {row[pres_col]}"
+                        f"Image {img_id}: unannotated lesion {code} must have lesion_present = null/None, got {row[pres_col]}"
                     )
                 continue
 
             # Annotated lesion branch
             annotated_counts[code] += 1
-            if pres_col not in row or pd.isna(row[pres_col]):
-                raise ValueError(
-                    f"Image {img_id}: missing required presence metadata column '{pres_col}' for annotated lesion {code}!"
-                )
+            pres_val = _parse_strict_bool(row[pres_col], pres_col, img_id, allow_none=False)
 
             mask_rel = row.get(mask_col)
             if not mask_rel or pd.isna(mask_rel):
@@ -855,13 +928,7 @@ def validate_segmentation_masks(
                 )
 
             actual_pos_pixels = int(np.sum(m_arr > 0))
-
-            try:
-                exp_cnt = int(row[cnt_col])
-            except (ValueError, TypeError) as e:
-                raise ValueError(
-                    f"Image {img_id}: invalid non-integer pixel_count for annotated lesion {code}: {row[cnt_col]}"
-                ) from e
+            exp_cnt = _parse_strict_int(row[cnt_col], cnt_col, img_id)
 
             if exp_cnt < 0:
                 raise ValueError(
@@ -873,14 +940,14 @@ def validate_segmentation_masks(
                     f"Actual positive pixels: {actual_pos_pixels}, manifest value: {exp_cnt}"
                 )
 
-            exp_present = bool(row[pres_col])
             actual_present = bool(actual_pos_pixels > 0)
-            if actual_present != exp_present:
+            if actual_present != pres_val:
                 raise ValueError(
                     f"Image {img_id}: lesion_present disagreement for {code}. "
-                    f"Actual pixels > 0: {actual_present}, manifest specifies {exp_present}"
+                    f"Actual pixels > 0: {actual_present}, manifest specifies {pres_val}"
                 )
 
+            decoded_masks[code] = (m_arr > 0)
             total_checked += 1
 
         # Composite mask validation (required for every manifest record)
@@ -905,9 +972,11 @@ def validate_segmentation_masks(
 
         # Required composite pixel-count metadata
         comp_val = None
+        comp_col_name = None
         for comp_col in ["composite_pixels", "pixel_count_composite"]:
             if comp_col in row and pd.notna(row[comp_col]):
                 comp_val = row[comp_col]
+                comp_col_name = comp_col
                 break
 
         if comp_val is None:
@@ -915,12 +984,7 @@ def validate_segmentation_masks(
                 f"Image {img_id}: missing required composite pixel-count metadata ('composite_pixels' or 'pixel_count_composite')!"
             )
 
-        try:
-            exp_comp = int(comp_val)
-        except (ValueError, TypeError) as e:
-            raise ValueError(
-                f"Image {img_id}: invalid non-integer composite pixel count: {comp_val}"
-            ) from e
+        exp_comp = _parse_strict_int(comp_val, comp_col_name or "composite_pixels", img_id)
 
         if exp_comp < 0:
             raise ValueError(f"Image {img_id}: negative composite pixel count: {exp_comp}")
@@ -930,6 +994,24 @@ def validate_segmentation_masks(
             raise ValueError(
                 f"Image {img_id}: composite pixel count mismatch. "
                 f"Actual positive pixels: {actual_comp_pixels}, manifest value: {exp_comp}"
+            )
+
+        # Composite mask logical union integrity check:
+        # Must strictly equal the pixel-wise union of MA, HE, EX, SE.
+        # OD must NEVER be included.
+        expected_union = np.zeros(target_size, dtype=bool)
+        for code in ["MA", "HE", "EX", "SE"]:
+            if code in decoded_masks:
+                expected_union |= decoded_masks[code]
+
+        actual_comp_bool = (c_arr > 0)
+        if not np.array_equal(actual_comp_bool, expected_union):
+            if "OD" in decoded_masks and np.any(decoded_masks["OD"] & actual_comp_bool & (~expected_union)):
+                raise ValueError(
+                    f"Image {img_id}: composite mask improperly includes Optic Disc (OD) pixels!"
+                )
+            raise ValueError(
+                f"Image {img_id}: composite mask does not match the pixel-wise logical union of MA, HE, EX, and SE!"
             )
 
     return {

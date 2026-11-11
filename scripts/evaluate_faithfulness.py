@@ -75,6 +75,7 @@ from src.dataset import IMAGENET_MEAN, IMAGENET_STD
 from src.explainability import GradCAM
 from src.faithfulness import (
     aggregate_faithfulness_scores,
+    compute_normalized_pauc,
     evaluate_progressive_deletion,
 )
 from src.model import ICDR_GRADES, build_model
@@ -399,11 +400,17 @@ def generate_markdown_report(
     p_audc_margin = summary_primary.get("overall", {}).get("audc_margin", {}).get("mean", 0.0)
     p_audc_salient = summary_primary.get("overall", {}).get("audc_salient", {}).get("mean", 0.0)
     p_audc_random = summary_primary.get("overall", {}).get("audc_random", {}).get("mean", 0.0)
+    p_pauc_margin = summary_primary.get("overall", {}).get("normalized_pauc_margin", {}).get("mean", 0.0)
+    p_pauc_salient = summary_primary.get("overall", {}).get("normalized_pauc_salient", {}).get("mean", 0.0)
+    p_pauc_random = summary_primary.get("overall", {}).get("normalized_pauc_random", {}).get("mean", 0.0)
 
     md.append(f"- **Faithfulness Success Rate (Primary Cohort)**: `{p_faithful_pct:.2f}%` of evaluated fundus images demonstrated a positive Faithfulness Margin ($AUDC_{{salient}} > AUDC_{{random}}$).")
-    md.append(f"- **Mean Salient AUDC**: `{p_audc_salient:.4f}` (average probability drop when removing top Grad-CAM activations).")
-    md.append(f"- **Mean Random Control AUDC**: `{p_audc_random:.4f}` (average probability drop when removing area-matched random retinal patches).")
-    md.append(f"- **Net Faithfulness Margin (Primary Cohort)**: `+{p_audc_margin:.4f}`")
+    md.append(f"- **Discrete Mean Salient Drop**: `{p_audc_salient:.4f}` (average probability drop when removing top Grad-CAM activations).")
+    md.append(f"- **Discrete Mean Random Drop**: `{p_audc_random:.4f}` (average probability drop when removing area-matched random retinal patches).")
+    md.append(f"- **Net Discrete Faithfulness Margin**: `+{p_audc_margin:.4f}`")
+    md.append(f"- **Normalized Partial-AUC Salient**: `{p_pauc_salient:.4f}` (trapezoidal AUC normalized to $[0, x_{{max}}]$).")
+    md.append(f"- **Normalized Partial-AUC Random**: `{p_pauc_random:.4f}` (trapezoidal AUC normalized to $[0, x_{{max}}]$).")
+    md.append(f"- **Net Normalized Partial-AUC Margin**: `+{p_pauc_margin:.4f}`")
     if p_audc_margin > 0.0:
         md.append("  - **Scientific Interpretation**: A systematically larger confidence drop under salient deletion than area-matched random deletion provides evidence of greater model sensitivity to the highlighted regions under the tested perturbation protocol. It indicates visual fidelity with respect to model confidence drops, though it does not establish definitive causality.")
     else:
@@ -420,47 +427,58 @@ def generate_markdown_report(
     md.append("| Metric | Count | Mean | Std | Median | IQR [25%, 75%] |")
     md.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
     ov_p = summary_primary.get("overall", {})
-    md.append(format_stats_row("AUDC Salient (Drop)", ov_p.get("audc_salient", {})))
-    md.append(format_stats_row("AUDC Random (Control)", ov_p.get("audc_random", {})))
-    md.append(format_stats_row("AUDC Faithfulness Margin (Net)", ov_p.get("audc_margin", {})))
+    md.append(format_stats_row("Mean Deletion Drop Salient", ov_p.get("mean_deletion_drop_salient", ov_p.get("audc_salient", {}))))
+    md.append(format_stats_row("Mean Deletion Drop Random", ov_p.get("mean_deletion_drop_random", ov_p.get("audc_random", {}))))
+    md.append(format_stats_row("Mean Deletion Margin (Net)", ov_p.get("mean_deletion_margin", ov_p.get("audc_margin", {}))))
+    md.append(format_stats_row("Normalized pAUC Salient", ov_p.get("normalized_pauc_salient", {})))
+    md.append(format_stats_row("Normalized pAUC Random", ov_p.get("normalized_pauc_random", {})))
+    md.append(format_stats_row("Normalized pAUC Margin (Net)", ov_p.get("normalized_pauc_margin", {})))
     md.append("")
 
     md.append("### Supplementary Test-Cohort Faithfulness Metrics (N = 3)\n")
     md.append("| Metric | Count | Mean | Std | Median | IQR [25%, 75%] |")
     md.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
     ov_s = summary_supp.get("overall", {})
-    md.append(format_stats_row("AUDC Salient (Drop)", ov_s.get("audc_salient", {})))
-    md.append(format_stats_row("AUDC Random (Control)", ov_s.get("audc_random", {})))
-    md.append(format_stats_row("AUDC Faithfulness Margin (Net)", ov_s.get("audc_margin", {})))
+    md.append(format_stats_row("Mean Deletion Drop Salient", ov_s.get("mean_deletion_drop_salient", ov_s.get("audc_salient", {}))))
+    md.append(format_stats_row("Mean Deletion Drop Random", ov_s.get("mean_deletion_drop_random", ov_s.get("audc_random", {}))))
+    md.append(format_stats_row("Mean Deletion Margin (Net)", ov_s.get("mean_deletion_margin", ov_s.get("audc_margin", {}))))
+    md.append(format_stats_row("Normalized pAUC Salient", ov_s.get("normalized_pauc_salient", {})))
+    md.append(format_stats_row("Normalized pAUC Random", ov_s.get("normalized_pauc_random", {})))
+    md.append(format_stats_row("Normalized pAUC Margin (Net)", ov_s.get("normalized_pauc_margin", {})))
     md.append("")
 
     md.append("### Full Composite Dataset (N = 81)\n")
     md.append("| Metric | Count | Mean | Std | Median | IQR [25%, 75%] |")
     md.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
     ov_c = summary_composite.get("overall", {})
-    md.append(format_stats_row("AUDC Salient (Drop)", ov_c.get("audc_salient", {})))
-    md.append(format_stats_row("AUDC Random (Control)", ov_c.get("audc_random", {})))
-    md.append(format_stats_row("AUDC Faithfulness Margin (Net)", ov_c.get("audc_margin", {})))
+    md.append(format_stats_row("Mean Deletion Drop Salient", ov_c.get("mean_deletion_drop_salient", ov_c.get("audc_salient", {}))))
+    md.append(format_stats_row("Mean Deletion Drop Random", ov_c.get("mean_deletion_drop_random", ov_c.get("audc_random", {}))))
+    md.append(format_stats_row("Mean Deletion Margin (Net)", ov_c.get("mean_deletion_margin", ov_c.get("audc_margin", {}))))
+    md.append(format_stats_row("Normalized pAUC Salient", ov_c.get("normalized_pauc_salient", {})))
+    md.append(format_stats_row("Normalized pAUC Random", ov_c.get("normalized_pauc_random", {})))
+    md.append(format_stats_row("Normalized pAUC Margin (Net)", ov_c.get("normalized_pauc_margin", {})))
     md.append("")
 
     md.append("## 3. Grade-Wise Faithfulness Analysis (Primary Cohort)\n")
     md.append("Breakdown of faithfulness metrics across Diabetic Retinopathy severity grades (ICDR 0 to 4):\n")
-    md.append("| Grade | Name | Count | Mean Salient Drop | Mean Random Drop | Net Faithfulness Margin |")
-    md.append("| :---: | :--- | :---: | :---: | :---: | :---: |")
+    md.append("| Grade | Name | Count | Mean Salient Drop | Mean Random Drop | Net Mean Margin | Norm pAUC Margin |")
+    md.append("| :---: | :--- | :---: | :---: | :---: | :---: | :---: |")
 
     gw_p = summary_primary.get("grade_wise", {})
     for g in range(5):
         g_data = gw_p.get(f"grade_{g}", {})
-        cnt = g_data.get("audc_margin", {}).get("count", 0)
-        s_mean = g_data.get("audc_salient", {}).get("mean")
-        r_mean = g_data.get("audc_random", {}).get("mean")
-        m_mean = g_data.get("audc_margin", {}).get("mean")
+        cnt = g_data.get("mean_deletion_margin", g_data.get("audc_margin", {})).get("count", 0)
+        s_mean = g_data.get("mean_deletion_drop_salient", g_data.get("audc_salient", {})).get("mean")
+        r_mean = g_data.get("mean_deletion_drop_random", g_data.get("audc_random", {})).get("mean")
+        m_mean = g_data.get("mean_deletion_margin", g_data.get("audc_margin", {})).get("mean")
+        pauc_m_mean = g_data.get("normalized_pauc_margin", {}).get("mean")
 
         s_str = f"{s_mean:.4f}" if s_mean is not None else "N/A"
         r_str = f"{r_mean:.4f}" if r_mean is not None else "N/A"
         m_str = f"{m_mean:+.4f}" if m_mean is not None else "N/A"
+        pauc_str = f"{pauc_m_mean:+.4f}" if pauc_m_mean is not None else "N/A"
 
-        md.append(f"| {g} | {ICDR_GRADES[g]} | {cnt} | {s_str} | {r_str} | {m_str} |")
+        md.append(f"| {g} | {ICDR_GRADES[g]} | {cnt} | {s_str} | {r_str} | {m_str} | {pauc_str} |")
     md.append("")
 
     md.append("## 4. Fill Strategy Comparison (Edge Artifact Controls)\n")
@@ -489,12 +507,20 @@ def generate_markdown_report(
     md.append("For an identical number of ablated pixels $N = \\sum M_{\\text{salient}}^{(k)}$, we sample $R = 5$ independent random binary masks $M_{\\text{rand}}^{(k, r)}$ strictly within the valid retinal boundary:")
     md.append("$$\\Delta p_{\\text{random}}^{(k)} = f_c(x) - \\frac{1}{R} \\sum_{r=1}^R f_c(x \\setminus M_{\\text{rand}}^{(k, r)})$$")
     md.append("")
-    md.append("### 6.3 Net Faithfulness Margin & AUDC")
-    md.append("The net faithfulness margin at step $k$ is:")
+    md.append("### 6.3 Discrete Mean Deletion Drop & Margin")
+    md.append("The discrete faithfulness margin at step $k$ is:")
     md.append("$$\\mathcal{M}^{(k)} = \\Delta p_{\\text{salient}}^{(k)} - \\Delta p_{\\text{random}}^{(k)}$$")
-    md.append("And the Area Under the Deletion Curve (AUDC) is computed across the deletion progression $\\{10\\%, 20\\%, 30\\%\\}$:")
-    md.append("$$\\text{AUDC} = \\frac{1}{K} \\sum_{k=1}^K \\Delta p^{(k)}$$")
-    md.append("A positive AUDC margin ($\\text{AUDC}_{\\text{salient}} - \\text{AUDC}_{\\text{random}} > 0$) provides empirical evidence of greater model sensitivity to the highlighted regions under the deletion protocol rather than establishing definitive causality.\n")
+    md.append("The discrete mean deletion drop across the deletion progression $\\{10\\%, 20\\%, 30\\%\\}$ is:")
+    md.append("$$\\text{Mean Drop} = \\frac{1}{K} \\sum_{k=1}^K \\Delta p^{(k)}$$")
+    md.append("The discrete net margin is $\\text{Mean Drop}_{\\text{salient}} - \\text{Mean Drop}_{\\text{random}}$.")
+    md.append("")
+    md.append("### 6.4 Normalized Trapezoidal Partial-AUC (pAUC)")
+    md.append("To account for non-uniform intervals and properly integrate under the deletion trajectory from baseline $(x_0=0, \\Delta p(0)=0)$ to $x_M$:")
+    md.append("$$\\text{pAUC}_{\\text{norm}} = \\frac{1}{x_M} \\sum_{m=1}^M \\frac{\\Delta p(x_{m-1}) + \\Delta p(x_m)}{2} (x_m - x_{m-1})$$")
+    md.append("Over the integration interval $[0, x_M]$ (e.g., $[0, 0.30]$), dividing by $x_M$ scales the metric back to the $[0, 1]$ probability drop domain.")
+    md.append("The net normalized partial-AUC margin is:")
+    md.append("$$\\mathcal{M}_{\\text{pAUC}} = \\text{pAUC}_{\\text{norm, salient}} - \\text{pAUC}_{\\text{norm, random}}$$")
+    md.append("A positive margin ($\\mathcal{M} > 0$) provides empirical evidence of greater model sensitivity to the highlighted regions under the deletion protocol rather than establishing definitive causality.\n")
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
@@ -685,11 +711,19 @@ def main() -> int:
 
                     audc_s = float(np.mean(salient_drops))
                     audc_r = float(np.mean(random_drops))
+                    pauc_s = compute_normalized_pauc(steps, salient_drops)
+                    pauc_r = compute_normalized_pauc(steps, random_drops)
                     eval_by_fill[fill] = {
                         "steps": step_records,
+                        "mean_deletion_drop_salient": audc_s,
+                        "mean_deletion_drop_random": audc_r,
+                        "mean_deletion_margin": audc_s - audc_r,
                         "audc_salient": audc_s,
                         "audc_random": audc_r,
                         "audc_margin": audc_s - audc_r,
+                        "normalized_pauc_salient": pauc_s,
+                        "normalized_pauc_random": pauc_r,
+                        "normalized_pauc_margin": pauc_s - pauc_r,
                         "overall_is_faithful": bool((audc_s - audc_r) > 0.0),
                     }
 
@@ -717,11 +751,18 @@ def main() -> int:
                     "image_id": r["image_id"],
                     "true_grade": r["true_grade"],
                     "predicted_grade": r["predicted_grade"],
+                    "target_class": r.get("target_class", r["predicted_grade"]),
                     "baseline_confidence": r["baseline_confidence"],
                     "cohort_origin": r["cohort_origin"],
+                    "mean_deletion_drop_salient": f_data.get("mean_deletion_drop_salient", f_data.get("audc_salient")),
+                    "mean_deletion_drop_random": f_data.get("mean_deletion_drop_random", f_data.get("audc_random")),
+                    "mean_deletion_margin": f_data.get("mean_deletion_margin", f_data.get("audc_margin")),
                     "audc_salient": f_data.get("audc_salient"),
                     "audc_random": f_data.get("audc_random"),
                     "audc_margin": f_data.get("audc_margin"),
+                    "normalized_pauc_salient": f_data.get("normalized_pauc_salient"),
+                    "normalized_pauc_random": f_data.get("normalized_pauc_random"),
+                    "normalized_pauc_margin": f_data.get("normalized_pauc_margin"),
                     "is_faithful": f_data.get("overall_is_faithful"),
                 })
             output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -907,9 +948,15 @@ def main() -> int:
             "target_class": r["target_class"],
             "baseline_confidence": r["baseline_confidence"],
             "cohort_origin": r.get("cohort_origin", "unknown"),
+            "mean_deletion_drop_salient": f_data.get("mean_deletion_drop_salient", f_data.get("audc_salient")),
+            "mean_deletion_drop_random": f_data.get("mean_deletion_drop_random", f_data.get("audc_random")),
+            "mean_deletion_margin": f_data.get("mean_deletion_margin", f_data.get("audc_margin")),
             "audc_salient": f_data.get("audc_salient"),
             "audc_random": f_data.get("audc_random"),
             "audc_margin": f_data.get("audc_margin"),
+            "normalized_pauc_salient": f_data.get("normalized_pauc_salient"),
+            "normalized_pauc_random": f_data.get("normalized_pauc_random"),
+            "normalized_pauc_margin": f_data.get("normalized_pauc_margin"),
             "is_faithful": f_data.get("overall_is_faithful"),
         })
     output_csv.parent.mkdir(parents=True, exist_ok=True)

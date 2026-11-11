@@ -1,4 +1,4 @@
-# Evaluating Grad-CAM Explanations for Diabetic Retinopathy Grading
+# Evaluating Grad-CAM Saliency for Diabetic Retinopathy: Lesion Localization versus Decision Faithfulness
 
 [![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org/)
@@ -28,12 +28,12 @@ Deep learning models achieve high diagnostic accuracy in Diabetic Retinopathy (D
 
 * **Phase 1: Project Setup & Dataset Audit** *(Complete ✅)* — Multi-dataset auditing (APTOS 3,662 images + IDRiD 516 grading + 81 segmentation images), integrity verification, and cross-dataset duplicate auditing.
 * **Phase 2: Data Preparation & Preprocessing** *(Complete ✅)* — Aspect-ratio preserving resizing ($512 \times 512$), black border removal, circular FOV masking, synchronized multi-lesion mask alignment (MA, HE, EX, SE), and stratified 80/20 APTOS splitting.
-* **Phase 3: CNN Model Development** *(Current Phase — Pipeline Implemented & Verified ✅)* — Reusable ResNet-50 backbone with ImageNet pretraining, dropout (0.3), inverse class-weighted CrossEntropyLoss, AdamW optimizer, Cosine Annealing schedule, validation QWK early stopping with `min_delta`, target layer (`layer4`), and opt-in external evaluation.
+* **Phase 3: CNN Model Development** *(Complete ✅)* — Reusable ResNet-50 backbone with ImageNet pretraining, dropout (0.3), inverse class-weighted CrossEntropyLoss, AdamW optimizer, Cosine Annealing schedule, validation QWK early stopping with `min_delta`, target layer (`layer4`), and opt-in external evaluation.
 * **Phase 4: Model Evaluation** *(Diagnostic Framework Verified ✅)* — Comprehensive diagnostic assessment (Accuracy, Macro F1, Sensitivity, Specificity, QWK, Confusion Matrix) on validation and external test sets, with strict dataset isolation and checkpoint immutability.
 * **Phase 5: Grad-CAM Explainability** *(Pipeline Implemented & Verified ✅)* — Hooking target convolutional feature maps (`layer4`) to generate normalized activation maps for predicted classes, multi-threshold binarization (top 5%, 10%, 20%), and alpha-blended fundus overlays.
-* **Phase 6: Localization Evaluation** *(Pipeline Implemented & Verified ✅)* — Multi-threshold binarization (top 5%, 10%, 20%) and IoU/Dice overlap computation against expert lesion masks (81 segmentation images: 78 primary cohort, 3 supplementary test overlap cohort). Grade 0 handled as N/A.
-* **Phase 7: Faithfulness Evaluation** *(Pipeline Implemented & Verified ✅)* — Deletion test with progressive salient region ablation ($10\%, 20\%, 30\%$), area-matched random-region controls, and AUDC metrics.
-* **Phase 8: Statistical Analysis & Research Findings** — Spearman rank correlation ($\rho$), bootstrap confidence intervals, and grade-by-grade synthesis.
+* **Phase 6: Localization Evaluation** *(Pipeline Implemented & Verified ✅)* — Multi-threshold binarization (top 5%, 10%, 20%) within valid retinal FOV and IoU/Dice overlap computation against expert lesion masks (81 segmentation images: 78 primary cohort, 3 supplementary test overlap cohort). Optic Disc (OD) serves as a negative control; Grade 0 handled as N/A.
+* **Phase 7: Faithfulness Evaluation** *(Pipeline Implemented & Verified ✅)* — Deletion test with progressive salient region ablation ($10\%, 20\%, 30\%$), area-matched random-region controls, discrete mean drop, and normalized trapezoidal partial-AUC metrics.
+* **Phase 8: Statistical Analysis & Hypothesis Testing** *(Pipeline Implemented & Verified ✅)* — Primary Spearman rank correlation ($\rho$) between Composite Dice (top 10%) and Faithfulness Net Margin, 95% bootstrap confidence intervals ($B=2000$), Benjamini-Hochberg FDR correction across grade subgroups, and OD negative control validation.
 * **Phase 9: Finalization & Presentation** — Research paper manuscript, minor project report, viva defence deck, and optional web demo.
 
 ---
@@ -42,6 +42,9 @@ Deep learning models achieve high diagnostic accuracy in Diabetic Retinopathy (D
 
 ```text
 DR-GradCAM-Evaluation/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                  # GitHub Actions CI workflow (Python 3.11 unit tests)
 ├── configs/
 │   └── config.yaml                 # Centralized configuration (paths, hyperparameters, thresholds)
 ├── data/
@@ -55,14 +58,20 @@ DR-GradCAM-Evaluation/
 │   └── GENUINE_INFERENCE_GUIDE.md  # Instructions for executing genuine inference on GPU/Colab
 ├── notebooks/                      # Colab/Jupyter research exploration notebooks
 ├── reports/
+│   ├── figures/                    # Publication-quality figures & correlation plots
 │   ├── SIMULATED_DATA_NOTICE.md    # Formal audit notice regarding simulated vs genuine artifacts
 │   ├── dataset_audit_report.md     # Phase 1 dataset audit report
 │   ├── idrid_seg_grading_matches.json # Empirical IDRiD segmentation-to-grading alignment
 │   ├── preprocessing_report.md     # Phase 2 preprocessing and split stratification report
-│   └── phase_3_training_report.md  # Phase 3 model training & evaluation report
+│   ├── phase_3_training_report.md  # Phase 3 model training & evaluation report
+│   ├── phase_6_localization_report.md # Phase 6 lesion localization report
+│   ├── phase_7_faithfulness_report.md # Phase 7 decision faithfulness report
+│   └── phase_8_statistical_analysis_report.md # Phase 8 hypothesis testing report
 ├── scripts/
+│   ├── analyze_results.py          # Phase 8 statistical analysis CLI
 │   ├── audit_dataset.py            # CLI entrypoint for dataset audit
 │   ├── diagnose_idrid_domain.py    # Phase 4 IDRiD domain shift diagnostic CLI
+│   ├── evaluate_faithfulness.py    # Phase 7 Grad-CAM faithfulness evaluation CLI
 │   ├── evaluate_localization.py    # Phase 6 Grad-CAM lesion localization CLI
 │   ├── preprocess_data.py          # Phase 2 preprocessing and split generator
 │   └── train.py                    # Phase 3 CNN training and evaluation CLI
@@ -71,16 +80,18 @@ DR-GradCAM-Evaluation/
 │   ├── audit.py                    # Multi-dataset verification & leakage detection logic
 │   ├── dataset.py                  # PyTorch Datasets with configurable augmentations
 │   ├── explainability.py           # Phase 5: Native Grad-CAM hooks, binarization, & overlay blending
-│   ├── faithfulness.py             # Phase 7: Deletion tests, salient region ablation, & AUDC
+│   ├── faithfulness.py             # Phase 7: Deletion tests, salient region ablation, & pAUC
 │   ├── localization.py             # Phase 6: Multi-threshold IoU/Dice lesion localization
 │   ├── model.py                    # ResNet-50 model builder & Grad-CAM target layer extractor
 │   ├── preprocessing.py            # Aspect-ratio preserving resizing, padding, mask alignment
 │   └── similarity.py               # Visual hash duplicate verification (pHash, dHash)
 ├── tests/
 │   ├── __init__.py
+│   ├── test_analysis.py            # Phase 8 statistical analysis & FDR test suite
 │   ├── test_audit.py               # Dataset audit test suite
 │   ├── test_diagnose_domain.py     # Domain diagnostic and dataset isolation tests
 │   ├── test_explainability.py      # Grad-CAM hooks, binarization, & overlay tests
+│   ├── test_faithfulness.py        # Faithfulness progressive deletion & pAUC tests
 │   ├── test_localization.py        # Lesion localization, cohort split, and immutability tests
 │   ├── test_model.py               # Model architecture & Grad-CAM layer tests
 │   ├── test_preprocessing.py       # Preprocessing & spatial mask alignment test suite
@@ -252,7 +263,17 @@ python scripts/evaluate_faithfulness.py \
     --manifest data/processed/idrid/segmentation_manifest.csv
 ```
 
-#### 9. Launch RetinaScope Streamlit Web Application
+#### 9. Phase 8: Statistical Analysis & Hypothesis Testing
+Computes Spearman rank correlation between lesion localization (Composite Dice @ top 10%) and faithfulness net margin, calculates 95% bootstrap confidence intervals, and applies Benjamini-Hochberg FDR adjustments across ICDR grade subgroups:
+```bash
+python scripts/analyze_results.py \
+    --localization-csv reports/phase_6_localization_predictions.csv \
+    --faithfulness-csv reports/faithfulness_predictions.csv \
+    --localization-json reports/phase_6_localization_report.json \
+    --faithfulness-json reports/phase_7_faithfulness_report.json
+```
+
+#### 10. Launch RetinaScope Streamlit Web Application
 Interactive web interface for DR grading and Grad-CAM visualization:
 ```bash
 streamlit run app.py
@@ -265,15 +286,22 @@ Output directories are fully configurable via the `--output-dir` CLI flag or `ou
   - **Training Epoch History:** `experiments/training_history.csv`
   - **Evaluation Metrics JSON:** `experiments/evaluation_metrics.json`
   - **Phase 3 Markdown Report:** `reports/phase_3_training_report.md`
+  - **Phase 6 Localization Report & CSV:** `reports/phase_6_localization_report.md`, `reports/phase_6_localization_predictions.csv`
+  - **Phase 7 Faithfulness Report & CSV:** `reports/phase_7_faithfulness_report.md`, `reports/faithfulness_predictions.csv`
+  - **Phase 8 Statistical Analysis Report & Figure:** `reports/phase_8_statistical_analysis_report.md`, `reports/figures/phase_8_correlation_plot.png`
 - **Google Drive Output Structure (when `--output-dir` is configured):**
   - **Checkpoints:** `<output-dir>/checkpoints/best_model_qwk.pth`
   - **Training History:** `<output-dir>/training_history.csv`
   - **Evaluation Metrics JSON:** `<output-dir>/evaluation_metrics.json`
-  - **Phase 3 Report:** `<output-dir>/reports/phase_3_training_report.md`
+  - **Phase Reports:** `<output-dir>/reports/`
   *(Local runtime copies are also simultaneously preserved.)*
 
 > [!NOTE]
-> **Current Project Status:** Phase 3 model architecture, data loaders, training engine, early stopping with `min_delta`, AMP acceleration, and unit tests are fully implemented and verified. Real model convergence weights and evaluation metrics will be produced when full training is launched on GPU hardware (e.g., Google Colab with Tesla T4).
+> **Research Pipeline & Execution Status:**
+> - **Phases 1 through 8 Software Pipeline:** Fully implemented, mathematically hardened, and rigorously verified by an extensive automated unit test suite.
+> - **Genuine Empirical Inference:** Pending execution in Google Colab on GPU hardware using the mounted IDRiD dataset and trained checkpoint.
+> - **Simulated Test Notice:** Any local output files marked with `simulated_` prefix or `SIMULATED` status banners were generated strictly for software pipeline mechanics and smoke testing. As detailed in [SIMULATED_DATA_NOTICE.md](reports/SIMULATED_DATA_NOTICE.md), they must never be cited as empirical findings or Viva defense claims.
+> - **Cohort Integrity:** The 78-image primary cohort and 3-image supplementary test overlap cohort (`IDRiD_09`, `IDRiD_22`, `IDRiD_31`) are strictly isolated across all evaluation phases. Optic Disc (OD) is evaluated exclusively as an anatomical negative control. Grade 0 images (no lesions) are treated as N/A for lesion localization, and the 21 unique segmentation images (`true_grade = None`) are included in overall primary correlations but excluded from grade-wise subgroups.
 
 ---
 
