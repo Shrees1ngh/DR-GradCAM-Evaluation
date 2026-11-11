@@ -483,3 +483,84 @@ def test_run_fov_quality_control(tmp_path: Path):
     assert csv_pending.exists()
     assert "Genuine 81-image validation remains pending" in md_pending.read_text(encoding="utf-8")
 
+
+def test_create_fov_contact_sheet():
+    """Verify create_fov_contact_sheet arranges overlays into a valid montage grid."""
+    from src.preprocessing import create_fov_contact_sheet
+
+    overlays = [np.ones((64, 64, 3), dtype=np.uint8) * (i * 20) for i in range(12)]
+    ids = [f"IDRiD_{i:02d}" for i in range(12)]
+
+    # 3x4 grid, 64x64 thumbnails
+    sheet = create_fov_contact_sheet(overlays, ids, grid_size=(3, 4), thumb_size=(64, 64))
+
+    assert sheet.shape == (3 * 64, 4 * 64, 3)
+    assert sheet.dtype == np.uint8
+    assert np.any(sheet > 0)
+
+
+def test_validate_segmentation_masks_valid_and_invalid(tmp_path: Path):
+    """Verify validate_segmentation_masks checks existence, resolution, and binary values."""
+    from src.preprocessing import validate_segmentation_masks
+
+    # Create valid dummy masks
+    mask_dir = tmp_path / "masks"
+    mask_dir.mkdir()
+
+    m_ma = Image.fromarray(np.ones((512, 512), dtype=np.uint8) * 255)
+    p_ma = mask_dir / "m_ma.png"
+    m_ma.save(p_ma)
+
+    m_he = Image.fromarray(np.zeros((512, 512), dtype=np.uint8))
+    p_he = mask_dir / "m_he.png"
+    m_he.save(p_he)
+
+    m_comp = Image.fromarray(np.ones((512, 512), dtype=np.uint8) * 255)
+    p_comp = mask_dir / "m_comp.png"
+    m_comp.save(p_comp)
+
+    # Valid manifest row
+    row_valid = {
+        "image_id": "seg_01",
+        "mask_MA": str(p_ma.relative_to(tmp_path)),
+        "annotated_MA": True,
+        "pixel_count_MA": 500,
+        "mask_HE": str(p_he.relative_to(tmp_path)),
+        "annotated_HE": True,
+        "pixel_count_HE": 0,
+        "mask_EX": "",
+        "annotated_EX": False,
+        "pixel_count_EX": -1,
+        "mask_SE": "",
+        "annotated_SE": False,
+        "pixel_count_SE": -1,
+        "mask_OD": "",
+        "annotated_OD": False,
+        "pixel_count_OD": -1,
+        "mask_composite": str(p_comp.relative_to(tmp_path)),
+    }
+    df_valid = pd.DataFrame([row_valid])
+
+    res = validate_segmentation_masks(df_valid, project_root=tmp_path, target_size=(512, 512))
+    assert res["status"] == "PASSED"
+    assert res["annotated_counts"]["MA"] == 1
+    assert res["annotated_counts"]["HE"] == 1
+    assert res["missing_annotation_counts"]["EX"] == 1
+
+    # Case: Non-binary values raise ValueError
+    m_bad_vals = Image.fromarray(np.ones((512, 512), dtype=np.uint8) * 128)
+    p_bad = mask_dir / "bad.png"
+    m_bad_vals.save(p_bad)
+    df_bad_vals = pd.DataFrame([{**row_valid, "mask_MA": str(p_bad.relative_to(tmp_path))}])
+    with pytest.raises(ValueError, match="contains non-binary values"):
+        validate_segmentation_masks(df_bad_vals, project_root=tmp_path, target_size=(512, 512))
+
+    # Case: Resolution mismatch raises ValueError
+    m_bad_res = Image.fromarray(np.ones((256, 256), dtype=np.uint8))
+    p_res = mask_dir / "bad_res.png"
+    m_bad_res.save(p_res)
+    df_bad_res = pd.DataFrame([{**row_valid, "mask_MA": str(p_res.relative_to(tmp_path))}])
+    with pytest.raises(ValueError, match="does not match expected"):
+        validate_segmentation_masks(df_bad_res, project_root=tmp_path, target_size=(512, 512))
+
+

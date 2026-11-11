@@ -60,6 +60,7 @@ from src.dataset import IMAGENET_MEAN, IMAGENET_STD, SegmentationLesionDataset
 from src.explainability import GradCAM, binarize_heatmap, generate_gradcam_overlay
 from src.localization import aggregate_localization_scores, evaluate_single_image_localization
 from src.model import ICDR_GRADES, build_model
+from src.preprocessing import validate_segmentation_masks
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -514,6 +515,47 @@ Thresholding Grad-CAM heatmaps at different percentile cutoffs demonstrates how 
     return md
 
 
+def export_localization_predictions_csv(results: List[Dict[str, Any]], output_csv: Path) -> pd.DataFrame:
+    """Export per-image localization metrics, IDs, grades, and cohort origins to CSV.
+
+    Args:
+        results: List of single-image evaluation result dictionaries.
+        output_csv: Path to write CSV file.
+
+    Returns:
+        DataFrame containing formatted per-image localization records.
+    """
+    rows = []
+    for r in results:
+        t_metrics = r.get("metrics_by_threshold", {})
+        t10 = t_metrics.get("top_10_pct", {})
+        lesions_10 = t10.get("lesions", {})
+        control_10 = t10.get("control", {})
+        comp = lesions_10.get("composite", {})
+        ma = lesions_10.get("MA", {})
+        he = lesions_10.get("HE", {})
+        ex = lesions_10.get("EX", {})
+        se = lesions_10.get("SE", {})
+        od = control_10.get("OD", {})
+        rows.append({
+            "image_id": r.get("image_id"),
+            "true_grade": r.get("grade"),
+            "predicted_grade": r.get("predicted_class"),
+            "cohort_origin": r.get("cohort_origin"),
+            "composite_iou_top_10": comp.get("iou"),
+            "composite_dice_top_10": comp.get("dice"),
+            "ma_iou_top_10": ma.get("iou"),
+            "he_iou_top_10": he.get("iou"),
+            "ex_iou_top_10": ex.get("iou"),
+            "se_iou_top_10": se.get("iou"),
+            "od_iou_top_10": od.get("iou"),
+        })
+    df = pd.DataFrame(rows)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_csv, index=False)
+    return df
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Phase 6: Evaluate Grad-CAM Lesion Localization against expert masks."
@@ -555,6 +597,12 @@ def main() -> int:
         help="Path to save JSON localization data.",
     )
     parser.add_argument(
+        "--output-csv",
+        type=Path,
+        default=None,
+        help="Path to save per-image localization predictions CSV.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run smoke test evaluation without requiring full trained weights or physical dataset.",
@@ -577,6 +625,7 @@ def main() -> int:
     if args.dry_run:
         output_md = args.output_md or PROJECT_ROOT / "reports" / "simulated_phase_6_localization_report.md"
         output_json = args.output_json or PROJECT_ROOT / "reports" / "simulated_phase_6_localization_report.json"
+        output_csv = args.output_csv or PROJECT_ROOT / "reports" / "simulated_phase_6_localization_predictions.csv"
         logging.warning("=" * 70)
         logging.warning("RUNNING IN DRY-RUN SIMULATION MODE.")
         logging.warning("Outputs will be saved with 'simulated_' prefix and marked SIMULATED.")
@@ -584,6 +633,7 @@ def main() -> int:
     else:
         output_md = args.output_md or PROJECT_ROOT / "reports" / "phase_6_localization_report.md"
         output_json = args.output_json or PROJECT_ROOT / "reports" / "phase_6_localization_report.json"
+        output_csv = args.output_csv or PROJECT_ROOT / "reports" / "phase_6_localization_predictions.csv"
 
     # Strict input validation in genuine mode
     if not args.dry_run:
@@ -635,6 +685,7 @@ def main() -> int:
 
             summary = aggregate_localization_scores(results, baseline_threshold_key="top_10_pct")
             generate_markdown_report(summary, results, output_md, is_simulated=True, state_dict_verified=False)
+            export_localization_predictions_csv(results, output_csv)
 
             with open(output_json, "w", encoding="utf-8") as f:
                 json.dump({
@@ -643,6 +694,7 @@ def main() -> int:
                 }, f, indent=2)
 
             logging.info(f"Simulated localization report saved to {output_md}")
+            logging.info(f"Simulated localization predictions CSV saved to {output_csv}")
             return 0
         else:
             logging.error(f"Segmentation manifest not found at {args.manifest}.")
@@ -651,7 +703,7 @@ def main() -> int:
     manifest_df = pd.read_csv(args.manifest)
     logging.info(f"Loaded segmentation manifest with {len(manifest_df)} records.")
 
-    # In genuine mode, verify that images and masks physically exist
+    # In genuine mode, verify that images and masks physically exist and pass strict validation
     if not args.dry_run:
         missing_images = [
             PROJECT_ROOT / str(row["image_path"])
@@ -665,6 +717,10 @@ def main() -> int:
                 "Cannot perform genuine localization evaluation. Use --dry-run for testing pipeline mechanics."
             )
             return 1
+
+        # Strict Lesion Mask Validation across all 81 images
+        logging.info("Validating physical lesion masks (MA, HE, EX, SE, OD, composite)...")
+        validate_segmentation_masks(manifest_df, project_root=PROJECT_ROOT)
 
     # Record checkpoint SHA-256 before inference
     sha256_before = compute_file_sha256(args.checkpoint)
@@ -785,6 +841,8 @@ def main() -> int:
         state_dict_verified=weights_identical,
     )
 
+    export_localization_predictions_csv(results, output_csv)
+
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump({
             "summary": summary,
@@ -794,6 +852,7 @@ def main() -> int:
         }, f, indent=2)
 
     logging.info(f"Genuine Phase 6 localization report written to: {output_md}")
+    logging.info(f"Genuine Phase 6 localization predictions CSV written to: {output_csv}")
     logging.info(f"Genuine structured metrics JSON written to: {output_json}")
 
     return 0

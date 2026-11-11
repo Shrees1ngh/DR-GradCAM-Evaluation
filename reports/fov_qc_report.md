@@ -8,5 +8,5 @@
 ### Required Dataset Specification
 - Expected Images: 81
 - Format: Centered square (512x512)
-- Expected Active Retinal Area Ratio: ~0.60 - 0.75
-- Flags to monitor: `EMPTY_FOV`, `UNUSUALLY_SMALL`, `UNUSUALLY_LARGE`, `PADDING_LEAK`
+- Expected Active Retinal Area Ratio: ~0.60 - 0.78 (theoretical max for inscribed circle: pi/4 = 78.54%)
+- Flags to monitor: `EMPTY_FOV`, `UNUSUALLY_SMALL` (< 0.50), `UNUSUALLY_LARGE` (> 0.85), `PADDING_LEAK`, `IRREGULAR_GEOMETRY` (< 0.60)

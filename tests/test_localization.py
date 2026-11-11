@@ -556,5 +556,65 @@ def test_localization_load_cohort_and_grade_mapping_strict(tmp_path: pytest.Temp
         assert grade_map[Path(fn).stem] is None
 
 
+def test_export_localization_predictions_csv(tmp_path: Path):
+    """Verify export_localization_predictions_csv writes structured per-image records."""
+    import pandas as pd
+    from scripts.evaluate_localization import export_localization_predictions_csv
+
+    mock_results = [
+        {
+            "image_id": "seg_01",
+            "grade": 2,
+            "predicted_class": 2,
+            "cohort_origin": "idrid_grading_train_cohort",
+            "metrics_by_threshold": {
+                "top_10_pct": {
+                    "lesions": {
+                        "composite": {"iou": 0.45, "dice": 0.62},
+                        "MA": {"iou": 0.30, "dice": 0.46},
+                        "HE": {"iou": 0.25, "dice": 0.40},
+                        "EX": {"iou": None, "dice": None},
+                        "SE": {"iou": 0.15, "dice": 0.26},
+                    },
+                    "control": {
+                        "OD": {"iou": 0.05, "dice": 0.10},
+                    },
+                }
+            },
+        },
+        {
+            "image_id": "seg_02",
+            "grade": None,
+            "predicted_class": 1,
+            "cohort_origin": "idrid_seg_unique",
+            "metrics_by_threshold": {
+                "top_10_pct": {
+                    "lesions": {
+                        "composite": {"iou": 0.10, "dice": 0.18},
+                        "MA": {"iou": None, "dice": None},
+                        "HE": {"iou": None, "dice": None},
+                        "EX": {"iou": None, "dice": None},
+                        "SE": {"iou": None, "dice": None},
+                    },
+                    "control": {
+                        "OD": {"iou": 0.0, "dice": 0.0},
+                    },
+                }
+            },
+        },
+    ]
+
+    out_csv = tmp_path / "test_localization_predictions.csv"
+    df = export_localization_predictions_csv(mock_results, out_csv)
+
+    assert out_csv.exists()
+    assert len(df) == 2
+    assert list(df["image_id"]) == ["seg_01", "seg_02"]
+    assert df.loc[0, "true_grade"] == 2
+    assert pd.isna(df.loc[1, "true_grade"])
+    assert df.loc[0, "composite_iou_top_10"] == 0.45
+    assert df.loc[1, "cohort_origin"] == "idrid_seg_unique"
+
+
 
 

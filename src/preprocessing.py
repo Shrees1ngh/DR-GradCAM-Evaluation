@@ -333,12 +333,20 @@ def evaluate_fov_mask_quality(
     flags = []
     if fov_pixels == 0:
         flags.append("EMPTY_FOV")
-    elif fov_area_ratio < 0.20:
+    elif fov_area_ratio < 0.50:
+        # An inscribed retinal circle in a square covers ~78.5% of area.
+        # Accounting for FOV cropping and centering padding (<=3%), the valid active area
+        # is expected to be ~60%-78%. Ratios below 50% indicate severe clipping or foreground loss.
         flags.append("UNUSUALLY_SMALL")
-    elif fov_area_ratio > 0.95:
+    elif fov_area_ratio > 0.85:
+        # Ratios above 85% indicate threshold leakage outside the circular aperture into the black corners.
         flags.append("UNUSUALLY_LARGE")
 
-    # Check for padding leakage
+    # Retinal aperture contour circularity check (ideal circle = 1.0)
+    if circularity > 0.0 and circularity < 0.60:
+        flags.append("IRREGULAR_GEOMETRY")
+
+    # Check for padding leakage: FOV mask must never encroach into zero-padded canvas margins
     if pad_offsets is not None:
         pad_top, pad_bottom, pad_left, pad_right = pad_offsets
         leak = False
@@ -397,6 +405,50 @@ def create_fov_overlay(
     return overlay
 
 
+def create_fov_contact_sheet(
+    overlays: List[np.ndarray],
+    image_ids: List[str],
+    grid_size: Tuple[int, int] = (9, 9),
+    thumb_size: Tuple[int, int] = (128, 128),
+) -> np.ndarray:
+    """Create a contact sheet montage of FOV contour overlays covering all 81 images.
+
+    Args:
+        overlays: List of RGB images with FOV contours drawn.
+        image_ids: Corresponding list of image IDs (e.g. 'IDRiD_01').
+        grid_size: (rows, cols) for the contact sheet grid (default: 9x9 = 81 tiles).
+        thumb_size: (width, height) thumbnail tile dimensions.
+
+    Returns:
+        RGB numpy array representing the complete 81-image contact sheet.
+    """
+    rows, cols = grid_size
+    tw, th = thumb_size
+    sheet = np.zeros((rows * th, cols * tw, 3), dtype=np.uint8)
+
+    for idx in range(min(len(overlays), rows * cols)):
+        r = idx // cols
+        c = idx % cols
+        thumb = cv2.resize(overlays[idx], (tw, th), interpolation=cv2.INTER_AREA)
+
+        # Draw image label at top-left
+        label = image_ids[idx].split("/")[-1].replace(".jpg", "")
+        cv2.putText(
+            thumb,
+            label,
+            (4, 14),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.35,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        sheet[r * th : (r + 1) * th, c * tw : (c + 1) * tw, :] = thumb
+
+    return sheet
+
+
 def run_fov_quality_control(
     manifest_df: Optional[pd.DataFrame] = None,
     project_root: Optional[Path] = None,
@@ -407,7 +459,8 @@ def run_fov_quality_control(
     """Execute quality control checks across all segmentation FOV masks.
 
     If genuine segmentation images and masks exist on disk, validates each mask,
-    accumulates metrics, and outputs comprehensive CSV and Markdown reports.
+    accumulates metrics, generates an 81-image FOV contour contact sheet,
+    and outputs comprehensive CSV and Markdown reports.
     If genuine images are absent, explicitly documents that genuine 81-image
     validation remains pending.
 
@@ -416,7 +469,7 @@ def run_fov_quality_control(
         project_root: Project root path.
         output_csv: Target path for QC report CSV.
         output_md: Target path for QC report Markdown.
-        montage_path: Optional path to save an overlay montage image.
+        montage_path: Optional path to save an overlay montage image (default: reports/fov_montage_81.png).
 
     Returns:
         Summary dictionary with QC results and status.
@@ -427,6 +480,8 @@ def run_fov_quality_control(
         output_csv = project_root / "reports" / "fov_qc_report.csv"
     if output_md is None:
         output_md = project_root / "reports" / "fov_qc_report.md"
+    if montage_path is None:
+        montage_path = project_root / "reports" / "fov_montage_81.png"
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     output_md.parent.mkdir(parents=True, exist_ok=True)
@@ -458,8 +513,8 @@ def run_fov_quality_control(
 ### Required Dataset Specification
 - Expected Images: 81
 - Format: Centered square (512x512)
-- Expected Active Retinal Area Ratio: ~0.60 - 0.75
-- Flags to monitor: `EMPTY_FOV`, `UNUSUALLY_SMALL`, `UNUSUALLY_LARGE`, `PADDING_LEAK`
+- Expected Active Retinal Area Ratio: ~0.60 - 0.78 (theoretical max for inscribed circle: pi/4 = 78.54%)
+- Flags to monitor: `EMPTY_FOV`, `UNUSUALLY_SMALL` (< 0.50), `UNUSUALLY_LARGE` (> 0.85), `PADDING_LEAK`, `IRREGULAR_GEOMETRY` (< 0.60)
 """
         output_md.write_text(md_content, encoding="utf-8")
         return {
@@ -471,11 +526,13 @@ def run_fov_quality_control(
         }
 
     # Evaluate each segmentation image and mask
-    overlays = []
+    overlays: List[np.ndarray] = []
+    image_ids: List[str] = []
+
     for idx, row in manifest_df.iterrows():
         img_id = str(row.get("image_id", f"img_{idx}"))
-        img_rel = row.get("processed_image_path", "")
-        fov_rel = row.get("fov_mask_path", "")
+        img_rel = row.get("processed_image_path", row.get("image_path", ""))
+        fov_rel = row.get("fov_mask_path", row.get("mask_fov", ""))
 
         img_path = project_root / img_rel
         fov_path = project_root / fov_rel if fov_rel else None
@@ -516,9 +573,9 @@ def run_fov_quality_control(
             "flags": ";".join(qc_res["flags"]),
         })
 
-        if montage_path and len(overlays) < 16:
-            overlay = create_fov_overlay(img_rgb, fov_mask)
-            overlays.append(overlay)
+        overlay = create_fov_overlay(img_rgb, fov_mask)
+        overlays.append(overlay)
+        image_ids.append(img_id)
 
     df_qc = pd.DataFrame(records)
     df_qc.to_csv(output_csv, index=False)
@@ -528,6 +585,13 @@ def run_fov_quality_control(
     failed_cnt = total_eval - passed_cnt
     mean_ratio = float(df_qc["fov_area_ratio"].mean()) if total_eval > 0 else 0.0
 
+    # Generate complete 81-image contact sheet montage
+    if overlays:
+        sheet = create_fov_contact_sheet(overlays, image_ids, grid_size=(9, 9), thumb_size=(128, 128))
+        montage_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(montage_path), cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
+        logging.info(f"Complete FOV contact sheet saved to {montage_path} ({sheet.shape[1]}x{sheet.shape[0]} px)")
+
     md_lines = [
         "# Retinal FOV Quality Control Report",
         "",
@@ -536,11 +600,12 @@ def run_fov_quality_control(
         f"- **Total Segmentation Images Evaluated**: {total_eval}",
         f"- **Valid FOV Masks**: {passed_cnt}",
         f"- **Flagged / Anomalous Masks**: {failed_cnt}",
-        f"- **Mean Active FOV Area Ratio**: {mean_ratio:.4f} (expected ~0.60 - 0.75)",
+        f"- **Mean Active FOV Area Ratio**: {mean_ratio:.4f} (expected ~0.60 - 0.78)",
+        f"- **Contact Sheet Montage**: `reports/fov_montage_81.png` (9x9 grid covering all {len(overlays)} images)",
         "",
         "### Quality Control Summary Table",
         "",
-        df_qc.head(15).to_markdown(index=False),
+        df_qc.head(20).to_markdown(index=False),
         "",
     ]
     output_md.write_text("\n".join(md_lines), encoding="utf-8")
@@ -551,5 +616,91 @@ def run_fov_quality_control(
         "passed": passed_cnt,
         "failed": failed_cnt,
         "mean_fov_area_ratio": mean_ratio,
+        "montage_path": str(montage_path) if overlays else None,
+    }
+
+
+def validate_segmentation_masks(
+    manifest_df: pd.DataFrame,
+    project_root: Optional[Path] = None,
+    target_size: Tuple[int, int] = (512, 512),
+) -> Dict[str, Any]:
+    """Validate completeness, resolution, and binarization of all lesion masks.
+
+    Checks:
+    1. Every expected annotated mask file exists on disk and is non-empty.
+    2. Every mask has the exact expected target dimensions (target_size).
+    3. Every mask is strictly binary with values in {0, 1}.
+    4. Missing annotations remain distinguished from annotated zero-lesion masks.
+
+    Args:
+        manifest_df: DataFrame from segmentation_manifest.csv.
+        project_root: Project root directory.
+        target_size: Expected (H, W) resolution (default: (512, 512)).
+
+    Returns:
+        Validation statistics dictionary.
+
+    Raises:
+        ValueError: If any annotated mask is missing, dimensions mismatch, or values are non-binary.
+    """
+    if project_root is None:
+        project_root = Path.cwd()
+
+    lesion_codes = ["MA", "HE", "EX", "SE", "OD", "composite"]
+    total_checked = 0
+    annotated_counts = {c: 0 for c in lesion_codes}
+    missing_annotation_counts = {c: 0 for c in lesion_codes}
+
+    for idx, row in manifest_df.iterrows():
+        img_id = str(row.get("image_id", f"row_{idx}"))
+
+        for code in lesion_codes:
+            mask_col = f"mask_{code}"
+            ann_col = f"annotated_{code}"
+            mask_rel = row.get(mask_col)
+
+            # composite is always expected
+            is_annotated = bool(row.get(ann_col, True)) if code != "composite" else True
+
+            if not is_annotated:
+                missing_annotation_counts[code] += 1
+                # Must be documented with pixel_count = -1
+                cnt_col = f"pixel_count_{code}"
+                if cnt_col in row and row[cnt_col] != -1:
+                    raise ValueError(
+                        f"Image {img_id}: unannotated lesion {code} must have pixel_count = -1, got {row[cnt_col]}"
+                    )
+                continue
+
+            annotated_counts[code] += 1
+            if not mask_rel or pd.isna(mask_rel):
+                raise ValueError(f"Image {img_id}: annotated mask_{code} path is missing in manifest!")
+
+            mask_path = project_root / str(mask_rel)
+            if not mask_path.exists() or mask_path.stat().st_size == 0:
+                raise ValueError(f"Image {img_id}: required annotated mask file missing or empty: {mask_path}")
+
+            with Image.open(mask_path) as m_pil:
+                m_arr = np.array(m_pil.convert("L"))
+
+            if m_arr.shape != target_size:
+                raise ValueError(
+                    f"Image {img_id} mask_{code} resolution {m_arr.shape} does not match expected {target_size}"
+                )
+
+            # Strictly binary {0, 1} or {0, 255}
+            u_vals = set(np.unique(m_arr))
+            if not u_vals.issubset({0, 1, 255}):
+                raise ValueError(
+                    f"Image {img_id} mask_{code} contains non-binary values: {u_vals}"
+                )
+            total_checked += 1
+
+    return {
+        "status": "PASSED",
+        "total_masks_validated": total_checked,
+        "annotated_counts": annotated_counts,
+        "missing_annotation_counts": missing_annotation_counts,
     }
 
