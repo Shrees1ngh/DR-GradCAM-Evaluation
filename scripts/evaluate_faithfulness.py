@@ -174,13 +174,13 @@ def load_cohort_and_grade_mapping(
 
     # Load verified training labels for the 57 matched training images
     training_labels: Dict[str, int] = {}
-    train_search_paths = []
-    if train_manifest_path:
-        train_search_paths.append(train_manifest_path)
-    train_search_paths.extend([
-        PROJECT_ROOT / "data" / "processed" / "idrid" / "external_train.csv",
-        PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "a. IDRiD_Disease Grading_Training Labels.csv",
-    ])
+    if train_manifest_path is not None:
+        train_search_paths = [train_manifest_path]
+    else:
+        train_search_paths = [
+            PROJECT_ROOT / "data" / "processed" / "idrid" / "external_train.csv",
+            PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "a. IDRiD_Disease Grading_Training Labels.csv",
+        ]
 
     for p in train_search_paths:
         if p.exists():
@@ -211,13 +211,13 @@ def load_cohort_and_grade_mapping(
 
     # Load verified test labels for the 3 supplementary test-matched images
     test_labels: Dict[str, int] = {}
-    test_search_paths = []
-    if test_manifest_path:
-        test_search_paths.append(test_manifest_path)
-    test_search_paths.extend([
-        PROJECT_ROOT / "data" / "processed" / "idrid" / "external_test.csv",
-        PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "b. IDRiD_Disease Grading_Testing Labels.csv",
-    ])
+    if test_manifest_path is not None:
+        test_search_paths = [test_manifest_path]
+    else:
+        test_search_paths = [
+            PROJECT_ROOT / "data" / "processed" / "idrid" / "external_test.csv",
+            PROJECT_ROOT / "data" / "raw" / "IDRiD" / "B. Disease Grading" / "B. Disease Grading" / "2. Groundtruths" / "b. IDRiD_Disease Grading_Testing Labels.csv",
+        ]
 
     for p in test_search_paths:
         if p.exists():
@@ -533,7 +533,7 @@ def main() -> int:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=PROJECT_ROOT / "experiments" / "checkpoints" / "best_model_qwk.pth",
+        default=PROJECT_ROOT / "experiments" / "checkpoints" / "model_b_best.pth",
         help="Path to trained model checkpoint (.pth).",
     )
     parser.add_argument(
@@ -666,8 +666,8 @@ def main() -> int:
             )
             return 1
 
-    # Check manifest existence
-    if not args.manifest.exists():
+    # Handle dry-run mode or missing manifest
+    if args.dry_run or not args.manifest.exists():
         if args.dry_run:
             logging.info(
                 f"Manifest not found on disk. Generating synthetic records for {args.dry_run_samples} images "

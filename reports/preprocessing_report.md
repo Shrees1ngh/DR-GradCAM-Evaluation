@@ -7,8 +7,8 @@
 
 ## 1. Executive Summary
 
-- **Pipeline Status:** `SUCCESS` ✅
-- **Data Leakage Check:** `PASSED (Zero Leakage)`
+- **Pipeline Status:** `FAILED` ❌
+- **Data Leakage Check:** `FAILED ⚠️`
 - **Target Resolution:** `512 x 512` (Preserving native aspect ratio with symmetric zero-padding)
 - **Primary Training Set (APTOS 80%):** 2929 images
 - **Primary Validation Set (APTOS 20%):** 733 images
@@ -55,9 +55,19 @@
 
 ## 4. Zero-Leakage & Integrity Verification
 
-- APTOS Train and Val splits are 100% disjoint.
-- APTOS sample count conserved: 2929 train + 733 val = 3,662.
-- IDRiD external test set preserved intact: 103 images.
+| Verification Check | Target Cohorts | Status | Audit Findings |
+| :--- | :--- | :---: | :--- |
+| **APTOS Train Uniqueness** | APTOS Train Cohort | `PASSED ✅` | All 2929 image identities in APTOS Train are unique. |
+| **APTOS Val Uniqueness** | APTOS Val Cohort | `PASSED ✅` | All 733 image identities in APTOS Val are unique. |
+| **IDRiD Train Uniqueness** | IDRiD Train Cohort | `PASSED ✅` | All 413 image identities in IDRiD Train are unique. |
+| **IDRiD Test Uniqueness** | IDRiD Test Cohort | `PASSED ✅` | All 103 image identities in IDRiD Test are unique. |
+| **IDRiD Segmentation Uniqueness** | IDRiD Segmentation Cohort | `PASSED ✅` | All 81 image identities in IDRiD Segmentation are unique. |
+| **APTOS Split Disjointness** | APTOS Train (80%) vs Val (20%) | `PASSED ✅` | APTOS Train (2929) and Val (733) splits are 100% disjoint. |
+| **APTOS Sample Conservation** | Total APTOS Cohort (N=3,662) | `PASSED ✅` | Sample count conserved: 2929 train + 733 val = 3,662. |
+| **IDRiD Cohort Isolation** | IDRiD Train vs Test | `FAILED ❌` | Critical Leakage: 103 image identities overlap between IDRiD Train and Test: ['IDRiD_001', 'IDRiD_002', 'IDRiD_003', 'IDRiD_004', 'IDRiD_005', 'IDRiD_006', 'IDRiD_007', 'IDRiD_008', 'IDRiD_009', 'IDRiD_010', 'IDRiD_011', 'IDRiD_012', 'IDRiD_013', 'IDRiD_014', 'IDRiD_015', 'IDRiD_016', 'IDRiD_017', 'IDRiD_018', 'IDRiD_019', 'IDRiD_020', 'IDRiD_021', 'IDRiD_022', 'IDRiD_023', 'IDRiD_024', 'IDRiD_025', 'IDRiD_026', 'IDRiD_027', 'IDRiD_028', 'IDRiD_029', 'IDRiD_030', 'IDRiD_031', 'IDRiD_032', 'IDRiD_033', 'IDRiD_034', 'IDRiD_035', 'IDRiD_036', 'IDRiD_037', 'IDRiD_038', 'IDRiD_039', 'IDRiD_040', 'IDRiD_041', 'IDRiD_042', 'IDRiD_043', 'IDRiD_044', 'IDRiD_045', 'IDRiD_046', 'IDRiD_047', 'IDRiD_048', 'IDRiD_049', 'IDRiD_050', 'IDRiD_051', 'IDRiD_052', 'IDRiD_053', 'IDRiD_054', 'IDRiD_055', 'IDRiD_056', 'IDRiD_057', 'IDRiD_058', 'IDRiD_059', 'IDRiD_060', 'IDRiD_061', 'IDRiD_062', 'IDRiD_063', 'IDRiD_064', 'IDRiD_065', 'IDRiD_066', 'IDRiD_067', 'IDRiD_068', 'IDRiD_069', 'IDRiD_070', 'IDRiD_071', 'IDRiD_072', 'IDRiD_073', 'IDRiD_074', 'IDRiD_075', 'IDRiD_076', 'IDRiD_077', 'IDRiD_078', 'IDRiD_079', 'IDRiD_080', 'IDRiD_081', 'IDRiD_082', 'IDRiD_083', 'IDRiD_084', 'IDRiD_085', 'IDRiD_086', 'IDRiD_087', 'IDRiD_088', 'IDRiD_089', 'IDRiD_090', 'IDRiD_091', 'IDRiD_092', 'IDRiD_093', 'IDRiD_094', 'IDRiD_095', 'IDRiD_096', 'IDRiD_097', 'IDRiD_098', 'IDRiD_099', 'IDRiD_100', 'IDRiD_101', 'IDRiD_102', 'IDRiD_103']. |
+| **IDRiD Training Set Integrity** | IDRiD Grading Training Set (N=413) | `PASSED ✅` | IDRiD grading training set preserved intact: exactly 413 images. |
+| **IDRiD Test Set Integrity** | IDRiD External Test Benchmark (N=103) | `PASSED ✅` | IDRiD external test set preserved intact: exactly 103 images. |
+| **IDRiD Segmentation Set Integrity** | IDRiD Segmentation Dataset (N=81) | `PASSED ✅` | IDRiD segmentation set preserved intact: exactly 81 images. |
 
 ## 5. Processed Manifests
 

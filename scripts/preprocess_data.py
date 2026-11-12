@@ -393,13 +393,16 @@ def preprocess_idrid(
     idrid_seg_df = pd.DataFrame(seg_records)
     idrid_seg_df.to_csv(idrid_out_dir / "segmentation_manifest.csv", index=False)
 
-    # Execute actual-data FOV Quality Control stage
+    # Execute actual-data FOV Quality Control stage (keep test runs isolated from repo reports/)
+    is_repo_processed_dir = processed_dir.resolve() == (PROJECT_ROOT / "data" / "processed").resolve()
+    qc_reports_dir = (PROJECT_ROOT / "reports") if is_repo_processed_dir else (processed_dir.parent / "reports")
+    qc_reports_dir.mkdir(parents=True, exist_ok=True)
     run_fov_quality_control(
         manifest_df=idrid_seg_df,
         project_root=PROJECT_ROOT,
-        output_csv=PROJECT_ROOT / "reports" / "fov_qc_report.csv",
-        output_md=PROJECT_ROOT / "reports" / "fov_qc_report.md",
-        montage_path=PROJECT_ROOT / "reports" / "fov_montage_81.png",
+        output_csv=qc_reports_dir / "fov_qc_report.csv",
+        output_md=qc_reports_dir / "fov_qc_report.md",
+        montage_path=qc_reports_dir / "fov_montage_81.png",
     )
 
     return idrid_train_df, idrid_test_df, idrid_seg_df

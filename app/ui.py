@@ -475,15 +475,122 @@ def render_explanation(inference: Dict[str, Any], stats: Dict[str, Any]) -> None
     )
 
 
+def render_benchmark_reference(
+    true_grade: Optional[int],
+    predicted_grade: int,
+    expert_data: Optional[Dict[str, Any]] = None,
+    loc_metrics: Optional[Dict[str, Any]] = None,
+    preprocessed_rgb: Optional[Any] = None,
+) -> None:
+    """Render post-inference ground-truth reference & localization metrics for real benchmark images."""
+    if true_grade is None and expert_data is None:
+        return
+
+    import cv2
+    import numpy as np
+    from app.inference import GRADE_DESCRIPTIONS
+
+    st.markdown(
+        """
+        <div class="card-panel">
+            <div class="card-title">Dataset Ground-Truth Reference (Post-Inference Verification)</div>
+            <div style="font-size: 0.82rem; color: #64748B; margin-bottom: 0.75rem;">
+                Reference labels and expert lesion annotations from the repository dataset. Not used during model inference.
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if true_grade is not None:
+        gt_title = GRADE_DESCRIPTIONS.get(int(true_grade), {}).get("title", f"Grade {true_grade}")
+        is_exact = int(true_grade) == int(predicted_grade)
+        is_within_1 = abs(int(true_grade) - int(predicted_grade)) <= 1
+        match_text = "Exact Match" if is_exact else ("Within 1 Grade" if is_within_1 else "Mismatch")
+        match_color = "#0F766E" if is_exact else ("#D97706" if is_within_1 else "#DC2626")
+
+        st.markdown(
+            f"""
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.65rem 1rem; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 4px; margin-bottom: 0.85rem;">
+                <div>
+                    <span style="font-size: 0.78rem; color: #64748B; text-transform: uppercase; font-weight: 600;">Ground-Truth ICDR Grade:</span>
+                    <strong style="color: #0F172A; margin-left: 0.4rem;">Grade {int(true_grade)}: {gt_title}</strong>
+                </div>
+                <span style="font-size: 0.82rem; font-weight: 700; color: {match_color};">{match_text}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if expert_data is not None and loc_metrics is not None and preprocessed_rgb is not None:
+        comp_mask = expert_data["composite_mask"]
+        # Create green contour/tint overlay for expert lesion ground truth
+        gt_overlay = preprocessed_rgb.copy()
+        mask_bool = comp_mask > 0
+        gt_overlay[mask_bool] = (
+            0.45 * gt_overlay[mask_bool] + 0.55 * np.array([20, 184, 166], dtype=np.float32)
+        ).astype(np.uint8)
+
+        col_gt1, col_gt2 = st.columns([1.0, 1.4])
+        with col_gt1:
+            st.image(gt_overlay, caption="Expert Composite Lesion Mask (MA ∪ HE ∪ EX ∪ SE)", use_container_width=True)
+        with col_gt2:
+            iou_50 = loc_metrics["iou_50"]
+            dice_50 = loc_metrics["dice_50"]
+            dice_10 = loc_metrics["dice_10"]
+            hit = "Yes (Hit)" if loc_metrics["pointing_hit"] else "No (Miss)"
+            lesion_summary = ", ".join(
+                f"{code}: {px:,} px" for code, px in expert_data["lesion_counts"].items()
+            ) or "None annotated"
+
+            st.markdown(
+                f"""
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">IoU (t=0.50)</div>
+                        <div class="stat-val">{iou_50:.4f}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Dice (t=0.50)</div>
+                        <div class="stat-val">{dice_50:.4f}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Dice (Top 10% FOV)</div>
+                        <div class="stat-val">{dice_10:.4f}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Pointing-Game Hit</div>
+                        <div class="stat-val">{hit}</div>
+                    </div>
+                </div>
+                <div style="font-size: 0.82rem; color: #475569; margin-top: 0.75rem;">
+                    <strong>Annotated Lesion Pixels:</strong> {lesion_summary}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_about_section(checkpoint_meta: Optional[Dict[str, Any]] = None) -> None:
     """Render project methodology, architecture details, and research context."""
-    val_qwk_str = "0.9076"
-    epoch_str = "8"
+    val_qwk_str = "0.8915"
+    epoch_str = "10"
+    ckpt_name = "model_b_best.pth"
     if checkpoint_meta:
-        if checkpoint_meta.get("best_val_qwk"):
+        if checkpoint_meta.get("best_val_qwk") is not None:
             val_qwk_str = f"{checkpoint_meta['best_val_qwk']:.4f}"
-        if checkpoint_meta.get("epoch"):
+        if checkpoint_meta.get("epoch") is not None:
             epoch_str = str(checkpoint_meta["epoch"])
+        if checkpoint_meta.get("checkpoint_name"):
+            ckpt_name = str(checkpoint_meta["checkpoint_name"])
+
+    model_label = "Model A (APTOS Baseline)" if ckpt_name == "best_model_qwk.pth" else "Model B (IDRiD Fine-Tuned)"
+    training_desc = (
+        "- **Training Cohort (Model A):** Trained strictly on APTOS 2019 (2,929 train / 733 val split); zero IDRiD images seen."
+        if ckpt_name == "best_model_qwk.pth"
+        else "- **Domain Adaptation (Model B):** Initialized from APTOS-trained Model A and fine-tuned on the IDRiD grading cohort (284 train / 72 val split, strictly excluding all 57 segmentation-overlap images and all 103 held-out test images)."
+    )
 
     with st.expander("About RetinaScope & Research Methodology", expanded=False):
         st.markdown(
@@ -500,10 +607,10 @@ def render_about_section(checkpoint_meta: Optional[Dict[str, Any]] = None) -> No
             - **Grade 3 (Severe NPDR):** Extensive hemorrhages in 4 quadrants, venous beading in 2+ quadrants, or IRMA in 1+ quadrant (4-2-1 rule).
             - **Grade 4 (Proliferative DR):** Neovascularization of retina or disc, or preretinal/vitreous hemorrhage.
 
-            ### Technical Architecture
-            - **Backbone:** ResNet-50 (`torchvision.models.resnet50`) initialized with ImageNet pretrained weights.
+            ### Technical Architecture ({model_label}: `{ckpt_name}`)
+            - **Backbone:** ResNet-50 (`torchvision.models.resnet50`) initialized from ImageNet and pre-trained on APTOS 2019 (3,662 fundus images).
+            {training_desc}
             - **Head:** Custom classification head with 30% dropout and 5-class linear projection.
-            - **Training Dataset:** Primary training on APTOS 2019 Blindness Detection (3,662 fundus images).
             - **Validation Performance:** Model selection monitored strictly on Validation Quadratic Weighted Kappa (**QWK = {val_qwk_str}**, Epoch {epoch_str}).
             - **Explainability:** Grad-CAM computed directly from the final convolutional block (`model.layer4`, 2048-dim feature maps).
             - **Preprocessing:** Retinal field-of-view border crop, aspect-ratio preserving isotropic resize, centered zero-padding to 512×512, and ImageNet standardization.

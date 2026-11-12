@@ -1,0 +1,277 @@
+{
+  "status": "GENUINE_STATISTICAL_ANALYSIS_COMPLETE",
+  "checkpoint_sha256": "d5bad1eda1a19402716edf681d0b7b0ff471f3a313364552c9ba690d5171206f",
+  "is_simulated": false,
+  "analysis_results": {
+    "faithfulness_metric_used": "normalized_pauc_margin",
+    "faithfulness_metric_label": "Normalized Partial-AUC Margin",
+    "primary_localization_metric": "composite_dice_top_10",
+    "primary_cohort_count": 78,
+    "supplementary_cohort_count": 3,
+    "total_merged_count": 81,
+    "complete_primary_pairs_count": 78,
+    "excluded_primary_records": [],
+    "missing_metric_counts": {
+      "composite_dice_top_10": 0,
+      "composite_iou_top_10": 0,
+      "ma_dice_top_10": 0,
+      "he_dice_top_10": 1,
+      "ex_dice_top_10": 0,
+      "se_dice_top_10": 40,
+      "od_dice_top_10": 0,
+      "normalized_pauc_margin": 0
+    },
+    "primary_analysis": {
+      "n": 78,
+      "rho": -0.44812433215992153,
+      "p_value": 3.884929314800827e-05,
+      "ci_lower": -0.618391068428325,
+      "ci_upper": -0.24696275899387324,
+      "confidence_level": 0.95,
+      "status": "ok",
+      "n_complete_pairs": 78,
+      "n_excluded": 0
+    },
+    "secondary_analyses": {
+      "composite_iou_top_10": {
+        "display_name": "Composite IoU",
+        "exploratory": true,
+        "n": 78,
+        "rho": -0.44812433215992153,
+        "p_value": 3.884929314800827e-05,
+        "ci_lower": -0.618391068428325,
+        "ci_upper": -0.24696275899387324,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "ma_dice_top_10": {
+        "display_name": "Microaneurysms (MA) Dice",
+        "exploratory": true,
+        "n": 78,
+        "rho": -0.3280910880958185,
+        "p_value": 0.003362713725474984,
+        "ci_lower": -0.5215973356527766,
+        "ci_upper": -0.11260994294100499,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "ma_iou_top_10": {
+        "display_name": "Microaneurysms (MA) IoU",
+        "exploratory": true,
+        "n": 78,
+        "rho": -0.3280910880958185,
+        "p_value": 0.003362713725474984,
+        "ci_lower": -0.5215973356527766,
+        "ci_upper": -0.11260994294100499,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "he_dice_top_10": {
+        "display_name": "Hemorrhages (HE) Dice",
+        "exploratory": true,
+        "n": 77,
+        "rho": -0.5075511999897542,
+        "p_value": 2.4617119521662288e-06,
+        "ci_lower": -0.6658976976098059,
+        "ci_upper": -0.3216846975496521,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "he_iou_top_10": {
+        "display_name": "Hemorrhages (HE) IoU",
+        "exploratory": true,
+        "n": 77,
+        "rho": -0.5075511999897542,
+        "p_value": 2.4617119521662288e-06,
+        "ci_lower": -0.6658976976098059,
+        "ci_upper": -0.3216846975496521,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "ex_dice_top_10": {
+        "display_name": "Hard Exudates (EX) Dice",
+        "exploratory": true,
+        "n": 78,
+        "rho": -0.006993449188172129,
+        "p_value": 0.9515439717215666,
+        "ci_lower": -0.25406021056743666,
+        "ci_upper": 0.22877034468080712,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "ex_iou_top_10": {
+        "display_name": "Hard Exudates (EX) IoU",
+        "exploratory": true,
+        "n": 78,
+        "rho": -0.006993449188172129,
+        "p_value": 0.9515439717215666,
+        "ci_lower": -0.25406021056743666,
+        "ci_upper": 0.22877034468080712,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "se_dice_top_10": {
+        "display_name": "Soft Exudates (SE) Dice",
+        "exploratory": true,
+        "n": 38,
+        "rho": 0.09855853253624063,
+        "p_value": 0.5560649591201264,
+        "ci_lower": -0.22444886801712519,
+        "ci_upper": 0.3949950043871852,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "se_iou_top_10": {
+        "display_name": "Soft Exudates (SE) IoU",
+        "exploratory": true,
+        "n": 38,
+        "rho": 0.09855853253624063,
+        "p_value": 0.5560649591201264,
+        "ci_lower": -0.22444886801712519,
+        "ci_upper": 0.3949950043871852,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "od_dice_top_10": {
+        "display_name": "Optic Disc (OD Control) Dice",
+        "exploratory": true,
+        "n": 78,
+        "rho": -0.15488558357815543,
+        "p_value": 0.1757318754606507,
+        "ci_lower": -0.3853581090437993,
+        "ci_upper": 0.0786030065657352,
+        "confidence_level": 0.95,
+        "status": "ok"
+      },
+      "od_iou_top_10": {
+        "display_name": "Optic Disc (OD Control) IoU",
+        "exploratory": true,
+        "n": 78,
+        "rho": -0.15488558357815543,
+        "p_value": 0.1757318754606507,
+        "ci_lower": -0.3853581090437993,
+        "ci_upper": 0.0786030065657352,
+        "confidence_level": 0.95,
+        "status": "ok"
+      }
+    },
+    "grade_wise_analyses": {
+      "grade_0": {
+        "grade": 0,
+        "grade_name": "No DR",
+        "n": 0,
+        "status": "insufficient_samples (Grade 0: no clinical lesions, N=0)",
+        "rho": null,
+        "p_value": null,
+        "p_value_fdr": null,
+        "ci_lower": null,
+        "ci_upper": null
+      },
+      "grade_1": {
+        "grade": 1,
+        "grade_name": "Mild NPDR",
+        "n": 0,
+        "status": "insufficient_samples (N < 5)",
+        "rho": null,
+        "p_value": null,
+        "p_value_fdr": null,
+        "ci_lower": null,
+        "ci_upper": null
+      },
+      "grade_2": {
+        "grade": 2,
+        "grade_name": "Moderate NPDR",
+        "n": 34,
+        "rho": -0.2711993888464476,
+        "p_value": 0.12079639512543319,
+        "ci_lower": -0.5694777326148004,
+        "ci_upper": 0.08434854065557346,
+        "confidence_level": 0.95,
+        "status": "ok",
+        "p_value_fdr": 0.1811945926881498
+      },
+      "grade_3": {
+        "grade": 3,
+        "grade_name": "Severe NPDR",
+        "n": 14,
+        "rho": -0.1032967032967033,
+        "p_value": 0.725282211088945,
+        "ci_lower": -0.6524479726897652,
+        "ci_upper": 0.45787762506815866,
+        "confidence_level": 0.95,
+        "status": "ok",
+        "p_value_fdr": 0.725282211088945
+      },
+      "grade_4": {
+        "grade": 4,
+        "grade_name": "PDR",
+        "n": 9,
+        "rho": -0.6833333333333333,
+        "p_value": 0.04244227208707231,
+        "ci_lower": -1.0,
+        "ci_upper": 0.1150442477876106,
+        "confidence_level": 0.95,
+        "status": "ok",
+        "p_value_fdr": 0.12732681626121695
+      }
+    },
+    "supplementary_analysis": {
+      "n": 3,
+      "status": "descriptive_only (N=3 insufficient for inferential hypothesis testing)",
+      "note": "With N=3, inferential rank correlation hypothesis testing is severely underpowered and omitted to prevent false scientific claims.",
+      "individual_measurements": [
+        {
+          "image_id": "IDRiD_09",
+          "true_grade": 2.0,
+          "predicted_grade": 3,
+          "composite_dice_top_10": 0.1128075613209352,
+          "composite_iou_top_10": 0.059775335577274,
+          "faithfulness_margin": -0.1373609387212329,
+          "heatmap_status": "ok",
+          "is_informative": true
+        },
+        {
+          "image_id": "IDRiD_22",
+          "true_grade": 2.0,
+          "predicted_grade": 4,
+          "composite_dice_top_10": 0.3229880136986301,
+          "composite_iou_top_10": 0.1925973197192086,
+          "faithfulness_margin": 0.0387745379315067,
+          "heatmap_status": "ok",
+          "is_informative": true
+        },
+        {
+          "image_id": "IDRiD_31",
+          "true_grade": 2.0,
+          "predicted_grade": 3,
+          "composite_dice_top_10": 0.2555075752031033,
+          "composite_iou_top_10": 0.1464652821481015,
+          "faithfulness_margin": -0.2238761416325967,
+          "heatmap_status": "ok",
+          "is_informative": true
+        }
+      ],
+      "descriptive_summary": {
+        "composite_dice": {
+          "mean": 0.2304343834075562,
+          "std": 0.10731008503647425,
+          "median": 0.2555075752031033,
+          "n_valid": 3
+        },
+        "faithfulness_margin": {
+          "mean": -0.10748751414077429,
+          "std": 0.13384939667773849,
+          "median": -0.1373609387212329,
+          "n_valid": 3
+        }
+      },
+      "rho": null,
+      "p_value": null
+    },
+    "supplementary_image_ids": [
+      "IDRiD_09",
+      "IDRiD_22",
+      "IDRiD_31"
+    ]
+  }
+}

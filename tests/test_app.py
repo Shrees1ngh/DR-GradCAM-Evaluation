@@ -130,12 +130,12 @@ def test_full_pipeline_unit_mock(tmp_path: Path):
 
 @pytest.mark.integration
 def test_full_pipeline_with_checkpoint():
-    """Integration test: load real checkpoint, run inference, compute Grad-CAM."""
-    ckpt_path = Path("experiments/checkpoints/best_model_qwk.pth")
+    """Integration test: load real Model B checkpoint, run inference on real image, compute Grad-CAM."""
+    ckpt_path = Path("experiments/checkpoints/model_b_best.pth")
     if not ckpt_path.exists():
         pytest.skip(
             "Integration test skipped: genuine trained checkpoint "
-            "'experiments/checkpoints/best_model_qwk.pth' not found on disk. "
+            "'experiments/checkpoints/model_b_best.pth' not found on disk. "
             "Place genuine trained weights to execute."
         )
 
@@ -145,12 +145,17 @@ def test_full_pipeline_with_checkpoint():
     assert model is not None
     assert meta["best_val_qwk"] is not None
     assert meta["epoch"] is not None
-    assert meta["epoch"] == 8
+    assert meta["epoch"] == 10
 
-    # Create dummy retinal image
-    synthetic = np.zeros((400, 400, 3), dtype=np.uint8)
-    synthetic[50:350, 50:350, 1] = 150
-    pil_img = Image.fromarray(synthetic)
+    # Use a real fundus image if available, otherwise fallback to synthetic
+    real_img_path = Path("data/processed/idrid/images/external_test_IDRiD_001.jpg")
+    if real_img_path.exists():
+        with Image.open(real_img_path) as img:
+            pil_img = img.convert("RGB")
+    else:
+        synthetic = np.zeros((400, 400, 3), dtype=np.uint8)
+        synthetic[50:350, 50:350, 1] = 150
+        pil_img = Image.fromarray(synthetic)
 
     preprocessed_rgb, tensor_img, _ = preprocess_retinal_image(
         pil_img, target_size=(512, 512), crop_fov=True, device=device
@@ -176,4 +181,59 @@ def test_full_pipeline_with_checkpoint():
     assert grayscale_cam.max() <= 1.0
     assert "coverage_baseline_10pct" in stats
     assert "peak_coordinate" in stats
+
+
+@pytest.mark.integration
+def test_benchmark_real_data_integration():
+    """Verify real benchmark catalog loading and live localization evaluation on IDRiD segmentation."""
+    from app.benchmark import (
+        load_benchmark_catalogs,
+        load_expert_lesion_data,
+        evaluate_live_localization,
+        resolve_image_path,
+    )
+
+    project_root = Path(".")
+    catalogs = load_benchmark_catalogs(project_root)
+    if "IDRiD Segmentation (81 lesion-masked images)" not in catalogs:
+        pytest.skip("IDRiD segmentation manifest not present locally.")
+
+    seg_df = catalogs["IDRiD Segmentation (81 lesion-masked images)"]
+    assert len(seg_df) == 81
+
+    # Test first image with non-zero composite mask
+    pos_rows = seg_df[seg_df["composite_pixels"] > 0]
+    assert len(pos_rows) > 0
+    row = pos_rows.iloc[0]
+
+    img_path = resolve_image_path(row, project_root)
+    assert img_path.exists()
+    with Image.open(img_path) as im:
+        rgb = np.array(im.convert("RGB"), dtype=np.uint8)
+
+    expert_data = load_expert_lesion_data(row, rgb, project_root)
+    assert expert_data is not None
+    assert expert_data["composite_mask"].shape == (512, 512)
+    assert expert_data["fov_mask"].shape == (512, 512)
+
+    # Evaluate against a real Model B Grad-CAM heatmap
+    ckpt_path = Path("experiments/checkpoints/model_b_best.pth")
+    if not ckpt_path.exists():
+        pytest.skip("model_b_best.pth not present locally.")
+
+    device = torch.device("cpu")
+    model, _ = load_trained_model(ckpt_path, device=device)
+    preprocessed_rgb, tensor_img, _ = preprocess_retinal_image(
+        Image.fromarray(rgb), target_size=(512, 512), crop_fov=True, device=device
+    )
+    res = run_inference(model, tensor_img)
+    _, _, grayscale_cam, _ = compute_gradcam(
+        model, tensor_img, preprocessed_rgb, target_grade=res["predicted_grade"]
+    )
+    metrics = evaluate_live_localization(grayscale_cam, expert_data)
+    assert 0.0 <= metrics["iou_50"] <= 1.0
+    assert 0.0 <= metrics["dice_50"] <= 1.0
+    assert 0.0 <= metrics["dice_10"] <= 1.0
+    assert isinstance(metrics["pointing_hit"], bool)
+
 

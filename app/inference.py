@@ -69,7 +69,7 @@ def load_trained_model(
     """Load the trained ResNet-50 model from the specified checkpoint.
 
     Args:
-        checkpoint_path: Path to best_model_qwk.pth.
+        checkpoint_path: Path to model checkpoint (e.g., model_b_best.pth).
         device: Torch device (defaults to get_device()).
 
     Returns:
@@ -83,13 +83,13 @@ def load_trained_model(
     if not ckpt_path.exists():
         raise FileNotFoundError(
             f"Model checkpoint not found at: {ckpt_path}\n"
-            "Please ensure 'experiments/checkpoints/best_model_qwk.pth' is present."
+            "Please ensure 'experiments/checkpoints/model_b_best.pth' is present."
         )
 
     if device is None:
         device = get_device()
 
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     model_config = checkpoint.get("model_config", {})
     num_classes = model_config.get("num_classes", 5)
@@ -110,13 +110,18 @@ def load_trained_model(
     model.to(device)
     model.eval()
 
+    val_qwk = checkpoint.get("best_val_qwk")
+    if val_qwk is None:
+        val_qwk = checkpoint.get("val_qwk")
+
     meta = {
         "epoch": checkpoint.get("epoch"),
-        "best_val_qwk": checkpoint.get("best_val_qwk"),
+        "best_val_qwk": val_qwk,
         "timestamp": checkpoint.get("timestamp"),
         "val_metrics": checkpoint.get("val_metrics", {}),
         "device": str(device),
         "checkpoint_path": str(ckpt_path),
+        "checkpoint_name": ckpt_path.name,
     }
 
     return model, meta

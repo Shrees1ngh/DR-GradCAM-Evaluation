@@ -145,6 +145,8 @@ def verify_dataset_isolation(
     # Check processed test manifest
     if test_manifest_path and test_manifest_path.exists():
         test_df = pd.read_csv(test_manifest_path)
+        if "image_path" in test_df.columns:
+            test_ids.update(test_df["image_path"].dropna().apply(lambda x: Path(str(x)).stem))
         if "original_id" in test_df.columns:
             test_ids.update(test_df["original_id"].astype(str))
         if "image_id" in test_df.columns:
@@ -655,13 +657,13 @@ def main() -> int:
             )
             return 1
 
-    if args.idrid_manifest.exists():
+    if not args.dry_run and args.idrid_manifest.exists():
         df = pd.read_csv(args.idrid_manifest)
         grade_col = "grade"
         image_paths = [PROJECT_ROOT / str(p) for p in df["image_path"]]
-        candidate_ids = [str(r) for r in df["original_id"]] if "original_id" in df.columns else [p.stem for p in image_paths]
+        candidate_ids = [p.stem for p in image_paths]
         ground_truth = df["grade"].tolist()
-    elif raw_labels_file.exists():
+    elif not args.dry_run and raw_labels_file.exists():
         df = pd.read_csv(raw_labels_file)
         grade_col = "Retinopathy grade"
         img_dir = raw_labels_file.parent.parent / "1. Original Images" / "a. Training Set"
