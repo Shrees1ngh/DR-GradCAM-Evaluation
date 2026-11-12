@@ -1,6 +1,6 @@
 > [!IMPORTANT]
 > **GENUINE EMPIRICAL RESEARCH REPORT**
-> Evaluated on genuine fundus imagery using the frozen APTOS-trained ResNet-50 checkpoint.
+> Evaluated on genuine fundus imagery using the frozen ResNet-50 checkpoint (`model_b_best.pth`).
 > Model weights and checkpoint file were verified 100% bit-exact immutable.
 
 # Phase 7: Grad-CAM Faithfulness & Decision Fidelity Evaluation Report
@@ -15,13 +15,13 @@
 
 ## 1. Executive Summary & Core Research Findings
 
-- **Faithfulness Success Rate (Primary Cohort)**: `34.62%` of evaluated fundus images demonstrated a positive Faithfulness Margin ($AUDC_{salient} > AUDC_{random}$).
-- **Discrete Mean Salient Drop**: `0.4859` (average probability drop when removing top Grad-CAM activations).
-- **Discrete Mean Random Drop**: `0.5850` (average probability drop when removing area-matched random retinal patches).
-- **Net Discrete Faithfulness Margin**: `+-0.0991`
-- **Normalized Partial-AUC Salient**: `0.3903` (trapezoidal AUC normalized to $[0, x_{max}]$).
-- **Normalized Partial-AUC Random**: `0.4874` (trapezoidal AUC normalized to $[0, x_{max}]$).
-- **Net Normalized Partial-AUC Margin**: `+-0.0972`
+- **Faithfulness Success Rate (Primary Cohort)**: `34.62%` of evaluated fundus images demonstrated a positive Faithfulness Margin (Discrete Mean Salient Drop $>$ Random Drop; legacy alias `audc_*`).
+- **Discrete Mean Salient Drop** *(legacy alias `audc_salient`, not trapezoidal AUC)*: `0.4859` (average probability drop when removing top Grad-CAM activations).
+- **Discrete Mean Random Drop** *(legacy alias `audc_random`, not trapezoidal AUC)*: `0.5850` (average probability drop when removing area-matched random retinal patches).
+- **Net Discrete Faithfulness Margin**: `-0.0991`
+- **Normalized Partial-AUC Salient** *(trapezoidal AUC, primary Phase 8 metric)*: `0.3903` (trapezoidal AUC normalized to $[0, x_{max}]$).
+- **Normalized Partial-AUC Random** *(trapezoidal AUC, primary Phase 8 metric)*: `0.4874` (trapezoidal AUC normalized to $[0, x_{max}]$).
+- **Net Normalized Partial-AUC Margin**: `-0.0972`
   - **Scientific Interpretation**: The model did not exhibit a positive net margin over random deletion, suggesting that under this perturbation protocol the model is not disproportionately sensitive to the highlighted regions relative to random tissue of equal area.
 
 ## 2. Cohort Separation & Dataset Isolation Protocol

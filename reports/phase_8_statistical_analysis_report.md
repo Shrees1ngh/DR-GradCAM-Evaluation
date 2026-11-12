@@ -38,7 +38,7 @@ We test whether visual explanation quality correlates with internal decision fid
 | Primary Cohort | 78 | `-0.4481` | `3.8849e-05` | `[-0.6184, -0.2470]` | **Reject H0** (Significant non-positive relationship) |
 
 ### Scientific Discussion
-The empirical correlation between lesion localization and decision faithfulness was not statistically significant under the predefined $\alpha = 0.05$ threshold. This underscores the crucial clinical principle that visual plausibility (highlighting what looks plausible to a clinician) does not necessarily imply decision fidelity (reflecting the model's actual internal feature utilization).
+The primary evaluation demonstrates a statistically significant negative rank correlation between lesion localization overlap and decision faithfulness ($p < 0.05$, $\rho < 0$). Higher lesion-overlap scores are associated with a more negative faithfulness margin under this black-fill perturbation protocol, indicating that stronger visual alignment with annotated lesions does not imply higher decision fidelity here and instead exhibits an inverse association.
 
 ## 2. Secondary Localization & Control Analyses (Primary Cohort, Exploratory)
 

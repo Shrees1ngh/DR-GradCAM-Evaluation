@@ -67,7 +67,10 @@ dataset:
 preprocessing:
   image_size: [512, 512]
   crop_black_borders: true
-  circular_fov_mask: true
+  # Disabled in image preprocessing: trained checkpoints (best_model_qwk.pth, model_b_best.pth)
+  # were trained with crop_to_retinal_fov + resize_and_pad without circular corner zeroing.
+  # Retinal FOV boundary masking is applied strictly during evaluation (Phase 6/7) via mask_fov.
+  circular_fov_mask: false
   normalization:
     mean: [0.485, 0.456, 0.406]
     std: [0.229, 0.224, 0.225]

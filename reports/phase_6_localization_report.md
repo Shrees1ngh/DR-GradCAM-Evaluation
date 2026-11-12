@@ -1,7 +1,7 @@
 # Phase 6: Grad-CAM Lesion Localization Evaluation Report
 
 > **Project:** DR-GradCAM-Evaluation  
-> **Model Backbone:** ResNet-50 (Trained strictly on APTOS 2019, $N=2,929$)  
+> **Model Backbone:** ResNet-50 (`model_b_best.pth`: APTOS-pretrained, fine-tuned on non-overlapping IDRiD grading cohort)  
 > **Primary Evaluation Cohort:** IDRiD Segmentation Non-Overlapping Subset ($N=78$)  
 > **Supplementary Evaluation Cohort:** IDRiD Segmentation Test-Overlap Subset ($N=3$: `IDRiD_09`, `IDRiD_22`, `IDRiD_31`)  
 > **Total Evaluated Images:** $N=81$ (Full 81-image segmentation cohort preserved)  

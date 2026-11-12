@@ -1228,6 +1228,8 @@ def generate_markdown_report(
     if rho is not None and p_val is not None:
         if p_val < 0.05 and rho > 0.0:
             md.append("The primary evaluation demonstrates a statistically significant positive rank correlation between lesion localization overlap and decision fidelity. This indicates that Grad-CAM heatmaps that align more closely with clinical lesions also correspond to higher model sensitivity under feature removal.")
+        elif p_val < 0.05 and rho < 0.0:
+            md.append("The primary evaluation demonstrates a statistically significant negative rank correlation between lesion localization overlap and decision faithfulness ($p < 0.05$, $\\rho < 0$). Higher lesion-overlap scores are associated with a more negative faithfulness margin under this black-fill perturbation protocol, indicating that stronger visual alignment with annotated lesions does not imply higher decision fidelity here and instead exhibits an inverse association.")
         else:
             md.append("The empirical correlation between lesion localization and decision faithfulness was not statistically significant under the predefined $\\alpha = 0.05$ threshold. This underscores the crucial clinical principle that visual plausibility (highlighting what looks plausible to a clinician) does not necessarily imply decision fidelity (reflecting the model's actual internal feature utilization).")
     md.append("")

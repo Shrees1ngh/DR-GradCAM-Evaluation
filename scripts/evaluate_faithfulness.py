@@ -383,7 +383,7 @@ def generate_markdown_report(
     else:
         md.append("> [!IMPORTANT]")
         md.append("> **GENUINE EMPIRICAL RESEARCH REPORT**")
-        md.append("> Evaluated on genuine fundus imagery using the frozen APTOS-trained ResNet-50 checkpoint.")
+        md.append("> Evaluated on genuine fundus imagery using the frozen ResNet-50 checkpoint.")
         md.append("> Model weights and checkpoint file were verified 100% bit-exact immutable.\n")
 
     md.append("# Phase 7: Grad-CAM Faithfulness & Decision Fidelity Evaluation Report\n")
@@ -404,13 +404,13 @@ def generate_markdown_report(
     p_pauc_salient = summary_primary.get("overall", {}).get("normalized_pauc_salient", {}).get("mean", 0.0)
     p_pauc_random = summary_primary.get("overall", {}).get("normalized_pauc_random", {}).get("mean", 0.0)
 
-    md.append(f"- **Faithfulness Success Rate (Primary Cohort)**: `{p_faithful_pct:.2f}%` of evaluated fundus images demonstrated a positive Faithfulness Margin ($AUDC_{{salient}} > AUDC_{{random}}$).")
-    md.append(f"- **Discrete Mean Salient Drop**: `{p_audc_salient:.4f}` (average probability drop when removing top Grad-CAM activations).")
-    md.append(f"- **Discrete Mean Random Drop**: `{p_audc_random:.4f}` (average probability drop when removing area-matched random retinal patches).")
-    md.append(f"- **Net Discrete Faithfulness Margin**: `+{p_audc_margin:.4f}`")
-    md.append(f"- **Normalized Partial-AUC Salient**: `{p_pauc_salient:.4f}` (trapezoidal AUC normalized to $[0, x_{{max}}]$).")
-    md.append(f"- **Normalized Partial-AUC Random**: `{p_pauc_random:.4f}` (trapezoidal AUC normalized to $[0, x_{{max}}]$).")
-    md.append(f"- **Net Normalized Partial-AUC Margin**: `+{p_pauc_margin:.4f}`")
+    md.append(f"- **Faithfulness Success Rate (Primary Cohort)**: `{p_faithful_pct:.2f}%` of evaluated fundus images demonstrated a positive Faithfulness Margin (Discrete Mean Salient Drop $>$ Random Drop; legacy alias `audc_*`).")
+    md.append(f"- **Discrete Mean Salient Drop** *(legacy alias `audc_salient`, not trapezoidal AUC)*: `{p_audc_salient:.4f}` (average probability drop when removing top Grad-CAM activations).")
+    md.append(f"- **Discrete Mean Random Drop** *(legacy alias `audc_random`, not trapezoidal AUC)*: `{p_audc_random:.4f}` (average probability drop when removing area-matched random retinal patches).")
+    md.append(f"- **Net Discrete Faithfulness Margin**: `{p_audc_margin:+.4f}`")
+    md.append(f"- **Normalized Partial-AUC Salient** *(trapezoidal AUC, primary Phase 8 metric)*: `{p_pauc_salient:.4f}` (trapezoidal AUC normalized to $[0, x_{{max}}]$).")
+    md.append(f"- **Normalized Partial-AUC Random** *(trapezoidal AUC, primary Phase 8 metric)*: `{p_pauc_random:.4f}` (trapezoidal AUC normalized to $[0, x_{{max}}]$).")
+    md.append(f"- **Net Normalized Partial-AUC Margin**: `{p_pauc_margin:+.4f}`")
     if p_audc_margin > 0.0:
         md.append("  - **Scientific Interpretation**: A systematically larger confidence drop under salient deletion than area-matched random deletion provides evidence of greater model sensitivity to the highlighted regions under the tested perturbation protocol. It indicates visual fidelity with respect to model confidence drops, though it does not establish definitive causality.")
     else:
