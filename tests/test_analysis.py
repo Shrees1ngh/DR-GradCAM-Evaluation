@@ -77,7 +77,13 @@ def test_verify_inputs_and_load_data_integrity_gate(tmp_path: Path):
     loc_json = tmp_path / "loc.json"
     faith_json = tmp_path / "faith.json"
 
-    df = pd.DataFrame([{"image_id": "img1", "composite_dice_top_10": 0.5, "normalized_pauc_margin": 0.2}])
+    df = pd.DataFrame([{
+        "image_id": "img1",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "composite_dice_top_10": 0.5,
+        "normalized_pauc_margin": 0.2,
+    }])
     df.to_csv(loc_csv, index=False)
     df.to_csv(faith_csv, index=False)
 
@@ -115,10 +121,29 @@ def test_verify_inputs_and_load_data_integrity_gate(tmp_path: Path):
         verify_inputs_and_load_data(loc_csv, faith_csv, loc_json, faith_json, allow_simulated=False)
 
     # 4. Matching SHA-256 passes in genuine mode with all 81 expected images
-    df_81 = pd.DataFrame([
-        {"image_id": f"IDRiD_{i:02d}", "composite_dice_top_10": 0.5, "normalized_pauc_margin": 0.2}
-        for i in range(1, 82)
-    ])
+    df_81_rows = []
+    for i in range(1, 82):
+        cid = f"IDRiD_{i:02d}"
+        if i <= 57:
+            cohort = "idrid_grading_train_cohort"
+            grade = 2
+        elif i <= 60:
+            cohort = "idrid_grading_test_cohort"
+            grade = 3
+        else:
+            cohort = "idrid_seg_unique"
+            grade = None
+        df_81_rows.append({
+            "image_id": cid,
+            "cohort_origin": cohort,
+            "true_grade": grade,
+            "predicted_grade": 2,
+            "target_class": 2,
+            "is_informative": True,
+            "composite_dice_top_10": 0.5,
+            "normalized_pauc_margin": 0.2,
+        })
+    df_81 = pd.DataFrame(df_81_rows)
     df_81.to_csv(loc_csv, index=False)
     df_81.to_csv(faith_csv, index=False)
 
@@ -220,10 +245,20 @@ def test_audit_and_merge_predictions_field_mismatches():
 
     # 3. predicted_grade mismatch
     loc_df3 = pd.DataFrame([
-        {"image_id": "IDRiD_01", "predicted_grade": 2},
+        {
+            "image_id": "IDRiD_01",
+            "cohort_origin": "idrid_grading_train_cohort",
+            "true_grade": 2,
+            "predicted_grade": 2,
+        },
     ])
     faith_df3 = pd.DataFrame([
-        {"image_id": "IDRiD_01", "predicted_grade": 4},
+        {
+            "image_id": "IDRiD_01",
+            "cohort_origin": "idrid_grading_train_cohort",
+            "true_grade": 2,
+            "predicted_grade": 4,
+        },
     ])
     with pytest.raises(ValueError, match="predicted_grade mismatch"):
         audit_and_merge_predictions(loc_df3, faith_df3, is_simulated=True)
@@ -471,3 +506,276 @@ def test_analyze_results_cli_end_to_end(tmp_path: Path):
     assert report_data["is_simulated"] is True
     assert "SIMULATED" in report_data["status"]
     assert report_data["analysis_results"]["primary_analysis"]["rho"] is not None
+
+
+# ==============================================================================
+# Phase 8 Strict Metadata & Validation Regression Tests
+# ==============================================================================
+
+def test_audit_and_merge_predictions_fractional_ground_truth_grades():
+    """Verify rejection of fractional, out-of-range, and boolean ground-truth grades."""
+    # 1. Fractional float grade
+    loc_df = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": 2.5}])
+    faith_df = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": 2.5}])
+    with pytest.raises(ValueError, match="fractional value"):
+        audit_and_merge_predictions(loc_df, faith_df, is_simulated=True)
+
+    # 2. Fractional string grade
+    loc_df_str = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": "2.5"}])
+    faith_df_str = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": "2.5"}])
+    with pytest.raises(ValueError, match="fractional value"):
+        audit_and_merge_predictions(loc_df_str, faith_df_str, is_simulated=True)
+
+    # 3. Out-of-bounds grade (> 4)
+    loc_df_high = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": 5}])
+    faith_df_high = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": 5}])
+    with pytest.raises(ValueError, match="greater than maximum"):
+        audit_and_merge_predictions(loc_df_high, faith_df_high, is_simulated=True)
+
+    # 4. Negative grade (< 0)
+    loc_df_neg = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": -1}])
+    faith_df_neg = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": -1}])
+    with pytest.raises(ValueError, match="less than minimum"):
+        audit_and_merge_predictions(loc_df_neg, faith_df_neg, is_simulated=True)
+
+    # 5. Boolean grade (e.g. True)
+    loc_df_bool = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": True}])
+    faith_df_bool = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": True}])
+    with pytest.raises(ValueError, match="got boolean"):
+        audit_and_merge_predictions(loc_df_bool, faith_df_bool, is_simulated=True)
+
+
+def test_audit_and_merge_predictions_fractional_predicted_classes():
+    """Verify rejection of fractional, out-of-range, and boolean predicted classes and grades."""
+    # 1. Fractional predicted grade in Phase 6
+    loc_df = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "predicted_grade": 1.5,
+    }])
+    faith_df = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "predicted_grade": 1,
+    }])
+    with pytest.raises(ValueError, match="fractional value"):
+        audit_and_merge_predictions(loc_df, faith_df, is_simulated=True)
+
+    # 2. Fractional target class in Phase 7
+    loc_df2 = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "predicted_grade": 1,
+    }])
+    faith_df2 = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "predicted_grade": 1,
+        "target_class": "1.5",
+    }])
+    with pytest.raises(ValueError, match="fractional value"):
+        audit_and_merge_predictions(loc_df2, faith_df2, is_simulated=True)
+
+    # 3. Out-of-bounds predicted class
+    loc_df3 = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "predicted_grade": 5,
+    }])
+    faith_df3 = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "predicted_grade": 5,
+    }])
+    with pytest.raises(ValueError, match="greater than maximum"):
+        audit_and_merge_predictions(loc_df3, faith_df3, is_simulated=True)
+
+
+def test_audit_and_merge_predictions_cohort_metadata_strict():
+    """Verify strict validation and rejection of missing, empty, or unrecognized cohorts."""
+    # 1. Missing cohort in Phase 6
+    loc_df = pd.DataFrame([{"image_id": "IDRiD_01", "true_grade": 2}])
+    faith_df = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": 2}])
+    with pytest.raises(ValueError, match="Missing cohort_origin in Phase 6"):
+        audit_and_merge_predictions(loc_df, faith_df, is_simulated=True)
+
+    # 2. Missing cohort in Phase 7
+    loc_df2 = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": 2}])
+    faith_df2 = pd.DataFrame([{"image_id": "IDRiD_01", "true_grade": 2}])
+    with pytest.raises(ValueError, match="Missing cohort_origin in Phase 7"):
+        audit_and_merge_predictions(loc_df2, faith_df2, is_simulated=True)
+
+    # 3. Empty string cohort
+    loc_df3 = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "", "true_grade": 2}])
+    faith_df3 = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "", "true_grade": 2}])
+    with pytest.raises(ValueError, match="Missing cohort_origin in Phase 6"):
+        audit_and_merge_predictions(loc_df3, faith_df3, is_simulated=True)
+
+    # 4. Unrecognized cohort label
+    loc_df4 = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "unrecognized_cohort", "true_grade": 2}])
+    faith_df4 = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "unrecognized_cohort", "true_grade": 2}])
+    with pytest.raises(ValueError, match="Unrecognized cohort_origin 'unrecognized_cohort'"):
+        audit_and_merge_predictions(loc_df4, faith_df4, is_simulated=True)
+
+
+def test_audit_and_merge_predictions_matched_and_unique_cohort_null_grades():
+    """Verify ground-truth grade rules: required for train/test matched cohorts, null for unique."""
+    # 1. Null grade in idrid_grading_train_cohort (must raise)
+    loc_df1 = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": None}])
+    faith_df1 = pd.DataFrame([{"image_id": "IDRiD_01", "cohort_origin": "idrid_grading_train_cohort", "true_grade": None}])
+    with pytest.raises(ValueError, match="Missing true_grade in Phase 6 for matched cohort"):
+        audit_and_merge_predictions(loc_df1, faith_df1, is_simulated=True)
+
+    # 2. Null grade in idrid_grading_test_cohort (must raise)
+    loc_df2 = pd.DataFrame([{"image_id": "IDRiD_09", "cohort_origin": "idrid_grading_test_cohort", "true_grade": None}])
+    faith_df2 = pd.DataFrame([{"image_id": "IDRiD_09", "cohort_origin": "idrid_grading_test_cohort", "true_grade": None}])
+    with pytest.raises(ValueError, match="Missing true_grade in Phase 6 for matched cohort"):
+        audit_and_merge_predictions(loc_df2, faith_df2, is_simulated=True)
+
+    # 3. Non-null grade in idrid_seg_unique (must raise)
+    loc_df3 = pd.DataFrame([{"image_id": "IDRiD_60", "cohort_origin": "idrid_seg_unique", "true_grade": 2}])
+    faith_df3 = pd.DataFrame([{"image_id": "IDRiD_60", "cohort_origin": "idrid_seg_unique", "true_grade": 2}])
+    with pytest.raises(ValueError, match="Expected null true_grade for unique segmentation record"):
+        audit_and_merge_predictions(loc_df3, faith_df3, is_simulated=True)
+
+    # 4. Valid null grade in idrid_seg_unique (must pass with unified_grade=None)
+    loc_df4 = pd.DataFrame([{"image_id": "IDRiD_60", "cohort_origin": "idrid_seg_unique", "true_grade": None}])
+    faith_df4 = pd.DataFrame([{"image_id": "IDRiD_60", "cohort_origin": "idrid_seg_unique", "true_grade": None}])
+    merged, _ = audit_and_merge_predictions(loc_df4, faith_df4, is_simulated=True)
+    assert merged["true_grade"].iloc[0] is None
+
+
+def test_audit_and_merge_predictions_genuine_prediction_metadata_required():
+    """Verify that genuine evaluation strictly requires predicted grade and target class metadata."""
+    rows_loc = []
+    rows_faith = []
+    for i in range(1, 82):
+        cid = f"IDRiD_{i:02d}"
+        cohort = "idrid_grading_train_cohort" if i <= 57 else ("idrid_grading_test_cohort" if i <= 60 else "idrid_seg_unique")
+        grade = 2 if cohort != "idrid_seg_unique" else None
+        rows_loc.append({
+            "image_id": cid,
+            "cohort_origin": cohort,
+            "true_grade": grade,
+            "is_informative": True,
+            # Missing predicted_grade / predicted_class on image 1
+            "predicted_grade": 2 if i > 1 else None,
+        })
+        rows_faith.append({
+            "image_id": cid,
+            "cohort_origin": cohort,
+            "true_grade": grade,
+            "is_informative": True,
+            "predicted_grade": 2,
+            "target_class": 2,
+        })
+
+    with pytest.raises(ValueError, match="Missing Phase 6 predicted class / grade for genuine image 'IDRiD_01'"):
+        audit_and_merge_predictions(pd.DataFrame(rows_loc), pd.DataFrame(rows_faith), is_simulated=False)
+
+
+def test_audit_and_merge_predictions_strict_boolean_parsing():
+    """Verify explicit boolean parsing: accepts 'True'/'False'/'1'/'0', rejects ambiguous/invalid."""
+    # 1. String "False" is correctly parsed as False (not True like bool("False"))
+    loc_df_false = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": "False",
+    }])
+    faith_df_false = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": "False",
+    }])
+    merged_false, _ = audit_and_merge_predictions(loc_df_false, faith_df_false, is_simulated=True)
+    assert bool(merged_false["is_informative"].iloc[0]) is False
+    assert merged_false["heatmap_status"].iloc[0] == "non_informative_heatmap"
+
+    # 2. String "True" is parsed as True
+    loc_df_true = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": "True",
+    }])
+    faith_df_true = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": "True",
+    }])
+    merged_true, _ = audit_and_merge_predictions(loc_df_true, faith_df_true, is_simulated=True)
+    assert bool(merged_true["is_informative"].iloc[0]) is True
+    assert merged_true["heatmap_status"].iloc[0] == "ok"
+
+    # 3. Numeric 1 and 0 (and floats 1.0, 0.0)
+    loc_df_num = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": 0,
+    }])
+    faith_df_num = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": 0.0,
+    }])
+    merged_num, _ = audit_and_merge_predictions(loc_df_num, faith_df_num, is_simulated=True)
+    assert bool(merged_num["is_informative"].iloc[0]) is False
+
+    # 4. Ambiguous string "yes" rejected
+    loc_df_yes = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": "yes",
+    }])
+    faith_df_yes = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": True,
+    }])
+    with pytest.raises(ValueError, match="Invalid boolean string.*'yes'"):
+        audit_and_merge_predictions(loc_df_yes, faith_df_yes, is_simulated=True)
+
+    # 5. Invalid integer 2 rejected
+    loc_df_two = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": 2,
+    }])
+    faith_df_two = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": True,
+    }])
+    with pytest.raises(ValueError, match="Invalid boolean integer.*2"):
+        audit_and_merge_predictions(loc_df_two, faith_df_two, is_simulated=True)
+
+    # 6. Null boolean value rejected when column present
+    loc_df_null = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": None,
+    }])
+    faith_df_null = pd.DataFrame([{
+        "image_id": "IDRiD_01",
+        "cohort_origin": "idrid_grading_train_cohort",
+        "true_grade": 2,
+        "is_informative": True,
+    }])
+    with pytest.raises(ValueError, match="Invalid null/empty boolean"):
+        audit_and_merge_predictions(loc_df_null, faith_df_null, is_simulated=True)

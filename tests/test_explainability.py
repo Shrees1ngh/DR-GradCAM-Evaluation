@@ -159,6 +159,55 @@ def test_check_heatmap_informativeness_behavior():
     assert stat == "ok"
 
 
+def test_check_heatmap_informativeness_non_finite_values():
+    """Verify check_heatmap_informativeness strictly detects and rejects non-finite values inside FOV."""
+    # 1. NaN inside FOV with fov_mask=None (entire array is FOV)
+    nan_map = np.zeros((50, 50), dtype=np.float32)
+    nan_map[10, 10] = np.nan
+    with pytest.raises(ValueError, match="Heatmap contains non-finite values.*1 NaN"):
+        check_heatmap_informativeness(nan_map)
+
+    # 2. Positive infinity inside FOV
+    pos_inf_map = np.zeros((50, 50), dtype=np.float32)
+    pos_inf_map[10, 10] = np.inf
+    with pytest.raises(ValueError, match="Heatmap contains non-finite values.*1 \\+Inf"):
+        check_heatmap_informativeness(pos_inf_map)
+
+    # 3. Negative infinity inside FOV
+    neg_inf_map = np.zeros((50, 50), dtype=np.float32)
+    neg_inf_map[10, 10] = -np.inf
+    with pytest.raises(ValueError, match="Heatmap contains non-finite values.*1 -Inf"):
+        check_heatmap_informativeness(neg_inf_map)
+
+    # 4. Mixed non-finite values
+    mixed_map = np.zeros((50, 50), dtype=np.float32)
+    mixed_map[0, 0] = np.nan
+    mixed_map[0, 1] = np.inf
+    mixed_map[0, 2] = -np.inf
+    with pytest.raises(ValueError, match="Heatmap contains non-finite values.*1 NaN, 1 \\+Inf, 1 -Inf"):
+        check_heatmap_informativeness(mixed_map)
+
+    # 5. Non-finite values strictly OUTSIDE the FOV mask (should pass safely)
+    fov_mask = np.zeros((50, 50), dtype=np.uint8)
+    fov_mask[10:40, 10:40] = 1
+
+    outside_nan = np.zeros((50, 50), dtype=np.float32)
+    outside_nan[0, 0] = np.nan
+    outside_nan[0, 1] = np.inf
+    outside_nan[0, 2] = -np.inf
+    outside_nan[20:30, 20:30] = 0.8  # Valid variation within FOV
+
+    is_inf, stat = check_heatmap_informativeness(outside_nan, fov_mask=fov_mask)
+    assert is_inf is True
+    assert stat == "ok"
+
+    # 6. Non-finite value INSIDE the FOV mask (must raise)
+    inside_nan = np.zeros((50, 50), dtype=np.float32)
+    inside_nan[25, 25] = np.nan
+    with pytest.raises(ValueError, match="Heatmap contains non-finite values.*1 NaN"):
+        check_heatmap_informativeness(inside_nan, fov_mask=fov_mask)
+
+
 def test_binarize_heatmap_deterministic_tie_breaking_and_fov():
     """Verify deterministic tie-breaking and exact pixel counts within valid retinal FOV."""
     h, w = 40, 40

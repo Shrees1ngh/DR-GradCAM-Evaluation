@@ -166,7 +166,11 @@ def evaluate_single_image_localization(
         fov_pixels = heatmap.size
         fov_aware = False
 
-    is_inf, heatmap_status = check_heatmap_informativeness(heatmap, fov_mask=fov_mask)
+    try:
+        is_inf, heatmap_status = check_heatmap_informativeness(heatmap, fov_mask=fov_mask)
+    except ValueError as e:
+        logger.error(f"Invalid heatmap encountered for image '{image_id}': {e}")
+        raise ValueError(f"Localization evaluation failed for image '{image_id}': {e}") from e
 
     eval_result: Dict[str, Any] = {
         "image_id": image_id,

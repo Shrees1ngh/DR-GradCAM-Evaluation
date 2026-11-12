@@ -455,6 +455,24 @@ def test_evaluate_single_image_localization_non_informative_heatmap():
     assert t10["lesions"]["composite"]["dice"] is None
 
 
+def test_evaluate_single_image_localization_non_finite_heatmap():
+    """Verify localization halts safely and logs image ID when encountering non-finite heatmap."""
+    h = np.zeros((50, 50), dtype=np.float32)
+    h[25, 25] = np.nan
+    m = np.zeros((50, 50), dtype=np.uint8)
+    m[10:20, 10:20] = 1
+    masks = {"MA": m, "HE": m, "EX": m, "SE": m, "composite": m, "OD": m}
+
+    with pytest.raises(ValueError, match="Localization evaluation failed for image 'invalid_nan_img':.*non-finite values"):
+        evaluate_single_image_localization(
+            heatmap=h,
+            ground_truth_masks=masks,
+            image_id="invalid_nan_img",
+            grade=2,
+            cohort_origin="idrid_grading_train_cohort",
+        )
+
+
 def test_cohort_and_grade_stratification_exact_counts():
     """Verify exact cohort and grade stratification across all 81 segmentation images:
     - 57 training-matched images with verified grades.

@@ -252,6 +252,29 @@ def test_evaluate_progressive_deletion_non_informative_heatmap():
     assert black_eval["overall_is_faithful"] is None
 
 
+def test_evaluate_progressive_deletion_non_finite_heatmap():
+    """Verify faithfulness halts safely and logs image ID when encountering non-finite heatmap."""
+    model = DummyModel()
+    img = np.full((32, 32, 3), 120, dtype=np.uint8)
+    nan_cam = np.zeros((32, 32), dtype=np.float32)
+    nan_cam[16, 16] = np.nan
+    fov = np.ones((32, 32), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="Faithfulness evaluation failed for image 'test_nan_img':.*non-finite values"):
+        evaluate_progressive_deletion(
+            model=model,
+            image_rgb=img,
+            heatmap=nan_cam,
+            target_class=1,
+            device="cpu",
+            image_id="test_nan_img",
+            true_grade=1,
+            deletion_steps=[0.05, 0.10],
+            fill_strategies=["black"],
+            valid_fov_mask=fov,
+        )
+
+
 # ---------------------------------------------------------------------------
 # 4. Aggregation Tests
 # ---------------------------------------------------------------------------

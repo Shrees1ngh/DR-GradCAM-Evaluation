@@ -59,6 +59,11 @@ EXPECTED_IDRID_SEG_COUNT = 81
 PRIMARY_COHORT_COUNT = 78
 SUPPLEMENTARY_COHORT_COUNT = 3
 SUPPLEMENTARY_IMAGE_IDS = {"IDRiD_09", "IDRiD_22", "IDRiD_31"}
+RECOGNIZED_COHORTS = {
+    "idrid_grading_train_cohort",
+    "idrid_grading_test_cohort",
+    "idrid_seg_unique",
+}
 ICDR_NAMES = {
     0: "No DR",
     1: "Mild NPDR",
@@ -66,6 +71,113 @@ ICDR_NAMES = {
     3: "Severe NPDR",
     4: "PDR",
 }
+
+
+def is_null_or_na(val: Any) -> bool:
+    """Check if a value represents null, missing, NaN, or empty metadata.
+
+    Carefully preserves boolean types (i.e. False is not null).
+    """
+    if val is None:
+        return True
+    if isinstance(val, bool):
+        return False
+    if pd.isna(val):
+        return True
+    if isinstance(val, str) and val.strip().lower() in ("nan", "none", "null", ""):
+        return True
+    return False
+
+
+def parse_strict_integer(
+    value: Any,
+    name: str,
+    min_val: Optional[int] = None,
+    max_val: Optional[int] = None,
+) -> int:
+    """Strictly parse integer values, rejecting booleans, non-finite values, and fractional floats.
+
+    Args:
+        value: The value to parse.
+        name: Name of the variable/field for error messages.
+        min_val: Minimum allowed integer value (inclusive).
+        max_val: Maximum allowed integer value (inclusive).
+
+    Returns:
+        The validated integer value.
+
+    Raises:
+        ValueError: If value is boolean, non-numeric, fractional, non-finite, or out of bounds.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"Expected integer for '{name}', got boolean: {value}")
+
+    try:
+        f_val = float(value)
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Invalid numeric value for '{name}': {value}") from e
+
+    if not np.isfinite(f_val):
+        raise ValueError(f"Expected finite integer for '{name}', got non-finite: {value}")
+
+    if not f_val.is_integer():
+        raise ValueError(f"Expected integer for '{name}', got fractional value: {value}")
+
+    int_val = int(f_val)
+    if min_val is not None and int_val < min_val:
+        raise ValueError(f"Value for '{name}' ({int_val}) is less than minimum allowed ({min_val}).")
+    if max_val is not None and int_val > max_val:
+        raise ValueError(f"Value for '{name}' ({int_val}) is greater than maximum allowed ({max_val}).")
+
+    return int_val
+
+
+def parse_strict_boolean(value: Any, name: str) -> bool:
+    """Strictly parse documented boolean representations.
+
+    Accepts:
+    - bool: True, False
+    - int/float: 1, 0, 1.0, 0.0 (exact representation of binary 0 or 1)
+    - str: "true", "false", "1", "0" (case-insensitive, stripped)
+
+    Rejects:
+    - None / NaN / pd.NA
+    - Ambiguous strings ("yes", "no", "maybe", etc.)
+    - Non-binary integers/floats (2, -1, 0.5, etc.)
+    - Arbitrary types
+    """
+    if value is None or (isinstance(value, float) and np.isnan(value)) or pd.isna(value):
+        raise ValueError(f"Invalid boolean for '{name}': value is missing/null/NaN.")
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, np.integer)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        raise ValueError(f"Invalid boolean integer for '{name}': {value}. Expected 0 or 1.")
+
+    if isinstance(value, (float, np.floating)):
+        if value == 1.0:
+            return True
+        if value == 0.0:
+            return False
+        raise ValueError(f"Invalid boolean float for '{name}': {value}. Expected 0.0 or 1.0.")
+
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "1"):
+            return True
+        if s in ("false", "0"):
+            return False
+        raise ValueError(
+            f"Invalid boolean string for '{name}': '{value}'. "
+            "Supported representations are 'true'/'false' or '1'/'0'."
+        )
+
+    raise ValueError(f"Invalid boolean type for '{name}': {type(value).__name__} ({value}).")
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -291,82 +403,177 @@ def audit_and_merge_predictions(
     for _, row in audit_merge.iterrows():
         cid = row["clean_id"]
 
-        # A. true_grade validation
-        g_loc = row.get("true_grade_loc")
-        if g_loc is None and "true_grade" in row:
-            g_loc = row["true_grade"]
-        g_faith = row.get("true_grade_faith")
-        if g_faith is None and "true_grade" in row:
-            g_faith = row["true_grade"]
+        # A. cohort_origin validation (must be present in both Phase 6 and Phase 7)
+        c_loc = row["cohort_origin_loc"] if "cohort_origin_loc" in row else (row["cohort_origin"] if "cohort_origin" in loc_df.columns else None)
+        c_faith = row["cohort_origin_faith"] if "cohort_origin_faith" in row else (row["cohort_origin"] if "cohort_origin" in faith_df.columns else None)
 
-        g_loc_na = pd.isna(g_loc) or g_loc is None or str(g_loc).strip().lower() in ("nan", "none", "")
-        g_faith_na = pd.isna(g_faith) or g_faith is None or str(g_faith).strip().lower() in ("nan", "none", "")
+        if is_null_or_na(c_loc):
+            raise ValueError(f"Missing cohort_origin in Phase 6 predictions for image '{cid}'.")
+        if is_null_or_na(c_faith):
+            raise ValueError(f"Missing cohort_origin in Phase 7 predictions for image '{cid}'.")
 
-        if g_loc_na != g_faith_na:
+        c_loc_str = str(c_loc).strip()
+        c_faith_str = str(c_faith).strip()
+
+        if c_loc_str not in RECOGNIZED_COHORTS:
             raise ValueError(
-                f"Integrity Gate Failed: true_grade mismatch for image '{cid}': "
-                f"Phase 6 has '{g_loc}', Phase 7 has '{g_faith}'."
+                f"Unrecognized cohort_origin '{c_loc_str}' in Phase 6 for image '{cid}'. "
+                f"Recognized cohorts are: {sorted(RECOGNIZED_COHORTS)}"
             )
-        if not g_loc_na and not g_faith_na:
-            if int(float(g_loc)) != int(float(g_faith)):
-                raise ValueError(
-                    f"Integrity Gate Failed: true_grade mismatch for image '{cid}': "
-                    f"Phase 6 has {g_loc}, Phase 7 has {g_faith}."
-                )
-            unified_grade = int(float(g_loc))
-        else:
-            unified_grade = None
+        if c_faith_str not in RECOGNIZED_COHORTS:
+            raise ValueError(
+                f"Unrecognized cohort_origin '{c_faith_str}' in Phase 7 for image '{cid}'. "
+                f"Recognized cohorts are: {sorted(RECOGNIZED_COHORTS)}"
+            )
 
-        # B. cohort_origin validation
-        c_loc = str(row.get("cohort_origin_loc", row.get("cohort_origin", "")) or "").strip()
-        c_faith = str(row.get("cohort_origin_faith", row.get("cohort_origin", "")) or "").strip()
-        if c_loc and c_faith and c_loc != c_faith:
+        if c_loc_str != c_faith_str:
             raise ValueError(
                 f"Integrity Gate Failed: cohort_origin mismatch for image '{cid}': "
-                f"Phase 6 has '{c_loc}', Phase 7 has '{c_faith}'."
+                f"Phase 6 has '{c_loc_str}', Phase 7 has '{c_faith_str}'."
             )
-        unified_cohort = c_loc or c_faith or "unknown"
+        unified_cohort = c_loc_str
+
+        # B. true_grade validation
+        g_loc = row["true_grade_loc"] if "true_grade_loc" in row else (row["true_grade"] if "true_grade" in loc_df.columns else None)
+        g_faith = row["true_grade_faith"] if "true_grade_faith" in row else (row["true_grade"] if "true_grade" in faith_df.columns else None)
+
+        g_loc_na = is_null_or_na(g_loc)
+        g_faith_na = is_null_or_na(g_faith)
+
+        if unified_cohort == "idrid_seg_unique":
+            # Preserve null grades exclusively for idrid_seg_unique records
+            if not g_loc_na or not g_faith_na:
+                raise ValueError(
+                    f"Integrity Gate Failed: Expected null true_grade for unique segmentation record '{cid}' "
+                    f"(cohort '{unified_cohort}'), but got Phase 6: '{g_loc}', Phase 7: '{g_faith}'."
+                )
+            unified_grade = None
+        else:
+            # Require valid ground-truth grades for train-matched and test-matched records
+            if g_loc_na:
+                raise ValueError(
+                    f"Integrity Gate Failed: Missing true_grade in Phase 6 for matched cohort image '{cid}' "
+                    f"(cohort '{unified_cohort}')."
+                )
+            if g_faith_na:
+                raise ValueError(
+                    f"Integrity Gate Failed: Missing true_grade in Phase 7 for matched cohort image '{cid}' "
+                    f"(cohort '{unified_cohort}')."
+                )
+
+            parsed_g_loc = parse_strict_integer(g_loc, f"Phase 6 true_grade for '{cid}'", min_val=0, max_val=4)
+            parsed_g_faith = parse_strict_integer(g_faith, f"Phase 7 true_grade for '{cid}'", min_val=0, max_val=4)
+
+            if parsed_g_loc != parsed_g_faith:
+                raise ValueError(
+                    f"Integrity Gate Failed: true_grade mismatch for image '{cid}': "
+                    f"Phase 6 has {parsed_g_loc}, Phase 7 has {parsed_g_faith}."
+                )
+            unified_grade = parsed_g_loc
 
         # C. predicted_grade / target_class validation
-        pred_loc = row.get("predicted_grade_loc", row.get("predicted_grade"))
-        pred_faith = row.get("predicted_grade_faith", row.get("predicted_grade"))
-        tgt_faith = row.get("target_class_faith", row.get("target_class"))
+        pred_loc = None
+        if "predicted_class_loc" in row and not is_null_or_na(row["predicted_class_loc"]):
+            pred_loc = row["predicted_class_loc"]
+        elif "predicted_grade_loc" in row and not is_null_or_na(row["predicted_grade_loc"]):
+            pred_loc = row["predicted_grade_loc"]
+        elif "predicted_class" in loc_df.columns and not is_null_or_na(row.get("predicted_class")):
+            pred_loc = row["predicted_class"]
+        elif "predicted_grade" in loc_df.columns and not is_null_or_na(row.get("predicted_grade")):
+            pred_loc = row["predicted_grade"]
 
-        pred_loc_na = pd.isna(pred_loc) or pred_loc is None or str(pred_loc).strip().lower() in ("nan", "none", "")
-        pred_faith_na = pd.isna(pred_faith) or pred_faith is None or str(pred_faith).strip().lower() in ("nan", "none", "")
-        tgt_faith_na = pd.isna(tgt_faith) or tgt_faith is None or str(tgt_faith).strip().lower() in ("nan", "none", "")
+        pred_faith = None
+        if "predicted_grade_faith" in row and not is_null_or_na(row["predicted_grade_faith"]):
+            pred_faith = row["predicted_grade_faith"]
+        elif "predicted_grade" in faith_df.columns and not is_null_or_na(row.get("predicted_grade")):
+            pred_faith = row["predicted_grade"]
 
-        if not pred_loc_na and not pred_faith_na:
-            if int(float(pred_loc)) != int(float(pred_faith)):
+        tgt_faith = None
+        if "target_class_faith" in row and not is_null_or_na(row["target_class_faith"]):
+            tgt_faith = row["target_class_faith"]
+        elif "target_class" in faith_df.columns and not is_null_or_na(row.get("target_class")):
+            tgt_faith = row["target_class"]
+
+        pred_loc_na = is_null_or_na(pred_loc)
+        pred_faith_na = is_null_or_na(pred_faith)
+        tgt_faith_na = is_null_or_na(tgt_faith)
+
+        if not is_simulated:
+            # Require predicted grade and target class metadata in genuine evaluation records
+            if pred_loc_na:
+                raise ValueError(f"Missing Phase 6 predicted class / grade for genuine image '{cid}'.")
+            if pred_faith_na:
+                raise ValueError(f"Missing Phase 7 predicted grade for genuine image '{cid}'.")
+            if tgt_faith_na:
+                raise ValueError(f"Missing Phase 7 target class for genuine image '{cid}'.")
+
+        parsed_pred_loc = (
+            parse_strict_integer(pred_loc, f"Phase 6 predicted class for '{cid}'", min_val=0, max_val=4)
+            if not pred_loc_na
+            else None
+        )
+        parsed_pred_faith = (
+            parse_strict_integer(pred_faith, f"Phase 7 predicted grade for '{cid}'", min_val=0, max_val=4)
+            if not pred_faith_na
+            else None
+        )
+        parsed_tgt_faith = (
+            parse_strict_integer(tgt_faith, f"Phase 7 target class for '{cid}'", min_val=0, max_val=4)
+            if not tgt_faith_na
+            else None
+        )
+
+        # Ensure Phase 6 predicted class, Phase 7 predicted grade, and Phase 7 target class agree
+        if parsed_pred_loc is not None and parsed_pred_faith is not None:
+            if parsed_pred_loc != parsed_pred_faith:
                 raise ValueError(
                     f"Integrity Gate Failed: predicted_grade mismatch for image '{cid}': "
-                    f"Phase 6 predicted {pred_loc}, Phase 7 predicted {pred_faith}."
+                    f"Phase 6 predicted {parsed_pred_loc}, Phase 7 predicted {parsed_pred_faith}."
                 )
-        if not pred_loc_na and not tgt_faith_na:
-            if int(float(pred_loc)) != int(float(tgt_faith)):
+
+        if parsed_pred_loc is not None and parsed_tgt_faith is not None:
+            if parsed_pred_loc != parsed_tgt_faith:
                 raise ValueError(
                     f"Integrity Gate Failed: predicted_grade / target_class mismatch for image '{cid}': "
-                    f"Phase 6 predicted {pred_loc}, Phase 7 explained class {tgt_faith}."
+                    f"Phase 6 predicted {parsed_pred_loc}, Phase 7 explained class {parsed_tgt_faith}."
                 )
 
-        unified_pred = int(float(pred_loc)) if not pred_loc_na else (int(float(pred_faith)) if not pred_faith_na else None)
-        unified_tgt = int(float(tgt_faith)) if not tgt_faith_na else unified_pred
+        if parsed_pred_faith is not None and parsed_tgt_faith is not None:
+            if parsed_pred_faith != parsed_tgt_faith:
+                raise ValueError(
+                    f"Integrity Gate Failed: Phase 7 predicted_grade and target_class mismatch for image '{cid}': "
+                    f"predicted {parsed_pred_faith}, target class {parsed_tgt_faith}."
+                )
+
+        unified_pred = parsed_pred_loc if parsed_pred_loc is not None else parsed_pred_faith
+        unified_tgt = parsed_tgt_faith if parsed_tgt_faith is not None else unified_pred
 
         # D. heatmap_status and is_informative
-        stat_loc = str(row.get("heatmap_status_loc", row.get("heatmap_status", "ok"))).strip()
-        stat_faith = str(row.get("heatmap_status_faith", row.get("heatmap_status", "ok"))).strip()
-        is_inf_loc = row.get("is_informative_loc", row.get("is_informative", True))
-        is_inf_faith = row.get("is_informative_faith", row.get("is_informative", True))
+        stat_loc = str(row["heatmap_status_loc"] if "heatmap_status_loc" in row else (row["heatmap_status"] if "heatmap_status" in loc_df.columns else "ok") or "ok").strip()
+        stat_faith = str(row["heatmap_status_faith"] if "heatmap_status_faith" in row else (row["heatmap_status"] if "heatmap_status" in faith_df.columns else "ok") or "ok").strip()
 
-        if is_inf_loc is None or pd.isna(is_inf_loc):
+        raw_inf_loc = row["is_informative_loc"] if "is_informative_loc" in row else (row["is_informative"] if "is_informative" in loc_df.columns else None)
+        raw_inf_faith = row["is_informative_faith"] if "is_informative_faith" in row else (row["is_informative"] if "is_informative" in faith_df.columns else None)
+
+        if not is_simulated:
+            if is_null_or_na(raw_inf_loc):
+                raise ValueError(f"Missing is_informative metadata in Phase 6 for genuine image '{cid}'.")
+            if is_null_or_na(raw_inf_faith):
+                raise ValueError(f"Missing is_informative metadata in Phase 7 for genuine image '{cid}'.")
+
+        if not is_null_or_na(raw_inf_loc):
+            is_inf_loc = parse_strict_boolean(raw_inf_loc, f"Phase 6 is_informative for '{cid}'")
+        else:
+            if "is_informative" in loc_df.columns or "is_informative_loc" in row:
+                raise ValueError(f"Invalid null/empty boolean for Phase 6 is_informative for '{cid}'.")
             is_inf_loc = True
-        else:
-            is_inf_loc = bool(is_inf_loc)
 
-        if is_inf_faith is None or pd.isna(is_inf_faith):
-            is_inf_faith = True
+        if not is_null_or_na(raw_inf_faith):
+            is_inf_faith = parse_strict_boolean(raw_inf_faith, f"Phase 7 is_informative for '{cid}'")
         else:
-            is_inf_faith = bool(is_inf_faith)
+            if "is_informative" in faith_df.columns or "is_informative_faith" in row:
+                raise ValueError(f"Invalid null/empty boolean for Phase 7 is_informative for '{cid}'.")
+            is_inf_faith = True
 
         if (
             stat_loc == "non_informative_heatmap"

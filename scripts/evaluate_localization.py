@@ -839,16 +839,20 @@ def main() -> int:
                         pad_offsets = None
                 valid_fov_mask = extract_retinal_fov_mask(raw_rgb, pad_offsets=pad_offsets)
 
-            img_res = evaluate_single_image_localization(
-                heatmap=heatmap,
-                ground_truth_masks=gt_masks,
-                image_id=str(row["image_id"]),
-                grade=grade_val,
-                thresholds=thresholds,
-                annotation_status=annotation_status,
-                cohort_origin=cohort_origin,
-                fov_mask=valid_fov_mask,
-            )
+            try:
+                img_res = evaluate_single_image_localization(
+                    heatmap=heatmap,
+                    ground_truth_masks=gt_masks,
+                    image_id=str(row["image_id"]),
+                    grade=grade_val,
+                    thresholds=thresholds,
+                    annotation_status=annotation_status,
+                    cohort_origin=cohort_origin,
+                    fov_mask=valid_fov_mask,
+                )
+            except Exception as e:
+                logging.error(f"Localization evaluation halted safely on invalid image '{row['image_id']}': {e}")
+                raise
             img_res["predicted_class"] = pred_class
             results.append(img_res)
 

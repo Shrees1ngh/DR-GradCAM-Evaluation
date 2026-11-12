@@ -355,7 +355,12 @@ def evaluate_progressive_deletion(
     if valid_fov_mask is None:
         valid_fov_mask = extract_retinal_fov_mask(image_rgb)
 
-    is_inf, heatmap_status = check_heatmap_informativeness(heatmap, fov_mask=valid_fov_mask)
+    try:
+        is_inf, heatmap_status = check_heatmap_informativeness(heatmap, fov_mask=valid_fov_mask)
+    except ValueError as e:
+        logger = logging.getLogger("faithfulness")
+        logger.error(f"Invalid heatmap encountered for image '{image_id}': {e}")
+        raise ValueError(f"Faithfulness evaluation failed for image '{image_id}': {e}") from e
     results["heatmap_status"] = heatmap_status
     results["is_informative"] = is_inf
 

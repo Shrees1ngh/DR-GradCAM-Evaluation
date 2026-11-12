@@ -323,6 +323,23 @@ def check_heatmap_informativeness(
     if len(vals) == 0:
         return False, "non_informative_heatmap"
 
+    # Explicitly detect NaN, positive infinity, and negative infinity within valid FOV
+    if not np.all(np.isfinite(vals)):
+        nan_cnt = int(np.isnan(vals).sum())
+        pos_inf_cnt = int(np.isposinf(vals).sum())
+        neg_inf_cnt = int(np.isneginf(vals).sum())
+        details = []
+        if nan_cnt > 0:
+            details.append(f"{nan_cnt} NaN")
+        if pos_inf_cnt > 0:
+            details.append(f"{pos_inf_cnt} +Inf")
+        if neg_inf_cnt > 0:
+            details.append(f"{neg_inf_cnt} -Inf")
+        detail_str = ", ".join(details)
+        raise ValueError(
+            f"Heatmap contains non-finite values ({detail_str}) within valid retinal FOV."
+        )
+
     max_val = float(np.max(vals))
     min_val = float(np.min(vals))
     ptp = max_val - min_val

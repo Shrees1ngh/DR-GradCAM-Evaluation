@@ -908,20 +908,24 @@ def main() -> int:
                 valid_fov_mask = extract_retinal_fov_mask(raw_rgb, pad_offsets=pad_offsets)
 
             # Run progressive ablation
-            img_faith = evaluate_progressive_deletion(
-                model=model,
-                image_rgb=raw_rgb,
-                heatmap=heatmap,
-                target_class=pred_class,
-                valid_fov_mask=valid_fov_mask,
-                device=device,
-                image_id=str(row["image_id"]),
-                true_grade=grade_val,
-                deletion_steps=steps,
-                fill_strategies=fill_strategies,
-                num_random_trials=args.num_random_trials,
-                seed=args.seed + idx,
-            )
+            try:
+                img_faith = evaluate_progressive_deletion(
+                    model=model,
+                    image_rgb=raw_rgb,
+                    heatmap=heatmap,
+                    target_class=pred_class,
+                    valid_fov_mask=valid_fov_mask,
+                    device=device,
+                    image_id=str(row["image_id"]),
+                    true_grade=grade_val,
+                    deletion_steps=steps,
+                    fill_strategies=fill_strategies,
+                    num_random_trials=args.num_random_trials,
+                    seed=args.seed + idx,
+                )
+            except Exception as e:
+                logging.error(f"Faithfulness evaluation halted safely on invalid image '{row['image_id']}': {e}")
+                raise
             img_faith["cohort_origin"] = cohort_origin
             results.append(img_faith)
 
