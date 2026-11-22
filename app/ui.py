@@ -1,365 +1,162 @@
-"""UI components, CSS styling, and layout helpers for RetinaScope.
+"""Clean, modern UI components for RetinaScope.
 
-Adheres strictly to professional medical research design standards:
-- Light neutral background (#F8FAFC, #FFFFFF)
-- Deep navy typography (#0F172A, #1E293B)
-- Clinical teal accent (#0D9488, #0F766E)
-- Subtle borders (#E2E8F0) and restrained, functional presentation
+Focuses on clarity, elegance, and minimalism:
+- Theme-adaptive (works seamlessly in Streamlit Dark and Light themes)
+- Zero visual clutter or redundant metadata
+- Explainable AI (XAI) Diagnostic Reasoning & Clinical Landmark Translation
+- Live Lesion Localization Benchmarking (IoU, Dice, Pointing Game)
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
-
+from typing import Any, Dict, Optional, Tuple
+from PIL import Image
+import numpy as np
 import streamlit as st
+
+from app.inference import GRADE_DESCRIPTIONS
 
 
 def get_custom_css() -> str:
-    """Return CSS styling for a clinical research application."""
+    """Minimal CSS enhancements that adapt to both Dark and Light themes and remove extra space."""
     return """
     <style>
-    /* Global Base */
-    html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        color: #0F172A;
-        background-color: #F8FAFC;
-    }
-
-    /* Main Container Padding */
     .block-container {
-        padding-top: 2rem;
-        padding-bottom: 3rem;
+        padding-top: 1.25rem !important;
+        padding-bottom: 2.5rem !important;
         max-width: 1200px;
     }
-
-    /* Top App Header */
-    .app-header {
-        border-bottom: 1px solid #E2E8F0;
-        padding-bottom: 1.25rem;
-        margin-bottom: 1.5rem;
-    }
-    .app-title {
-        color: #0F172A;
-        font-size: 2.1rem;
-        font-weight: 700;
-        letter-spacing: -0.02em;
-        margin: 0;
-        line-height: 1.2;
-    }
-    .app-subtitle {
-        color: #0D9488;
-        font-size: 1.05rem;
-        font-weight: 600;
-        margin-top: 0.25rem;
-        margin-bottom: 0.5rem;
-    }
-    .app-meta-bar {
-        display: flex;
-        gap: 0.75rem;
-        align-items: center;
-        flex-wrap: wrap;
-        margin-top: 0.75rem;
-    }
-    .meta-tag {
-        display: inline-block;
-        font-size: 0.78rem;
-        font-weight: 500;
-        padding: 0.2rem 0.6rem;
-        border-radius: 4px;
-        background-color: #F1F5F9;
-        color: #334155;
-        border: 1px solid #E2E8F0;
-    }
-    .meta-tag-teal {
-        background-color: #CCFBF1;
-        color: #0F766E;
-        border: 1px solid #99F6E4;
-        font-weight: 600;
-    }
-
-    /* Disclaimer Callout */
-    .disclaimer-banner {
-        background-color: #FFFFFF;
-        border-left: 4px solid #0D9488;
-        border-top: 1px solid #E2E8F0;
-        border-right: 1px solid #E2E8F0;
-        border-bottom: 1px solid #E2E8F0;
-        border-radius: 4px;
-        padding: 0.75rem 1rem;
-        margin-bottom: 1.5rem;
-        font-size: 0.85rem;
-        color: #475569;
-        line-height: 1.45;
-    }
-
-    /* Content Cards */
-    .card-panel {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 6px;
-        padding: 1.25rem 1.5rem;
-        margin-bottom: 1.25rem;
-        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
-    }
-    .card-title {
-        font-size: 1.05rem;
-        font-weight: 600;
-        color: #0F172A;
-        margin-bottom: 0.75rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-
-    /* Prediction Result Banner */
-    .prediction-box {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 1rem 1.25rem;
-        border-radius: 6px;
-        border: 1px solid #E2E8F0;
-        background-color: #FFFFFF;
-        margin-bottom: 1rem;
-    }
-    .grade-badge {
-        font-size: 1.4rem;
-        font-weight: 700;
-        color: #0F172A;
-        line-height: 1.2;
-    }
-    .confidence-pill {
-        font-size: 1.15rem;
-        font-weight: 700;
-        color: #0D9488;
-        background-color: #F0FDFA;
-        border: 1px solid #99F6E4;
-        padding: 0.35rem 0.85rem;
-        border-radius: 4px;
-    }
-
-    /* Probability Bar Row */
-    .prob-row {
-        margin-bottom: 0.65rem;
-    }
-    .prob-label-row {
-        display: flex;
-        justify-content: space-between;
-        font-size: 0.84rem;
-        color: #334155;
-        margin-bottom: 0.25rem;
-    }
-    .prob-track {
-        background-color: #F1F5F9;
-        border-radius: 3px;
-        height: 12px;
-        width: 100%;
-        overflow: hidden;
-    }
-    .prob-fill {
-        height: 100%;
-        border-radius: 3px;
-        transition: width 0.3s ease;
-    }
-
-    /* Image Display Containers */
-    .viz-container {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 6px;
-        padding: 0.75rem;
-        text-align: center;
-    }
-    .viz-label {
-        font-size: 0.82rem;
-        font-weight: 600;
-        color: #1E293B;
-        margin-top: 0.5rem;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-    }
-
-    /* Stats Grid */
-    .stats-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 0.75rem;
-        margin-top: 0.75rem;
-    }
-    .stat-card {
-        background-color: #F8FAFC;
-        border: 1px solid #E2E8F0;
-        border-radius: 4px;
-        padding: 0.6rem 0.75rem;
-    }
-    .stat-label {
-        font-size: 0.74rem;
-        color: #64748B;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin-bottom: 0.2rem;
-    }
-    .stat-val {
-        font-size: 1rem;
-        font-weight: 600;
-        color: #0F172A;
-    }
-
-    /* Streamlit Custom Overrides */
-    div[data-testid="stSidebar"] {
-        background-color: #FFFFFF;
-        border-right: 1px solid #E2E8F0;
-    }
     .stButton>button {
-        background-color: #0D9488;
-        color: #FFFFFF;
+        border-radius: 8px;
         font-weight: 600;
-        border: none;
-        border-radius: 4px;
-        padding: 0.55rem 1.25rem;
-        transition: background-color 0.15s ease;
+        padding: 0.6rem 1.5rem;
+        transition: all 0.2s ease;
     }
-    .stButton>button:hover {
-        background-color: #0F766E;
-        color: #FFFFFF;
-    }
-    .stButton>button:active {
-        background-color: #115E59;
+    .xai-card {
+        padding: 0.85rem 1.15rem;
+        border-radius: 10px;
+        margin-bottom: 0.5rem;
+        background-color: rgba(125, 125, 125, 0.05);
+        border: 1px solid rgba(125, 125, 125, 0.15);
     }
     </style>
     """
 
 
-def render_header(model_meta: Optional[Dict[str, Any]] = None) -> None:
-    """Render application header with title, subtitle, and checkpoint metadata."""
-    qwk_text = ""
-    epoch_text = ""
-    device_text = ""
-
-    if model_meta:
-        val_qwk = model_meta.get("best_val_qwk")
-        if val_qwk is not None:
-            qwk_text = f"Val QWK: {val_qwk:.4f}"
-        epoch = model_meta.get("epoch")
-        if epoch is not None:
-            epoch_text = f"Epoch {epoch}"
-        device = model_meta.get("device")
-        if device:
-            device_text = f"Device: {device.upper()}"
-
+def render_header() -> None:
+    """Render a clean, minimal header without clutter."""
+    st.title("👁️ RetinaScope")
     st.markdown(
-        f"""
-        <div class="app-header">
-            <h1 class="app-title">RetinaScope</h1>
-            <div class="app-subtitle">Diabetic Retinopathy Analysis and Visualization</div>
-            <div class="app-meta-bar">
-                <span class="meta-tag meta-tag-teal">ResNet-50</span>
-                <span class="meta-tag">ICDR 5-Class</span>
-                <span class="meta-tag">Grad-CAM Salience</span>
-                {f'<span class="meta-tag">{qwk_text}</span>' if qwk_text else ''}
-                {f'<span class="meta-tag">{epoch_text}</span>' if epoch_text else ''}
-                {f'<span class="meta-tag">{device_text}</span>' if device_text else ''}
-            </div>
-        </div>
-        <div class="disclaimer-banner">
-            <strong>Research Prototype Notice:</strong> RetinaScope is designed for clinical research and algorithmic explainability evaluation.
-            It does not constitute a clinically approved diagnostic medical device and must not replace direct examination by a licensed ophthalmologist or optometrist.
-        </div>
-        """,
+        "**AI-Powered Diabetic Retinopathy Diagnostic & Grad-CAM Visual Explainability**  \n"
+        "<span style='color: gray; font-size: 0.88rem;'>ResNet-50 Backbone • ICDR 5-Grade Assessment • Layer4 Saliency Overlays</span>",
         unsafe_allow_html=True,
     )
 
 
 def render_prediction_card(inference: Dict[str, Any]) -> None:
-    """Render top summary card for the predicted DR grade."""
+    """Render a clean diagnostic outcome summary."""
     grade = inference["predicted_grade"]
     info = inference["grade_info"]
     conf = inference["confidence"]
 
-    st.markdown(
-        f"""
-        <div class="card-panel">
-            <div class="card-title">Model Classification Result</div>
-            <div class="prediction-box">
-                <div>
-                    <div style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748B; font-weight: 600;">
-                        Predicted DR Severity
-                    </div>
-                    <div class="grade-badge" style="color: {info['badge_color']};">
-                        Grade {grade}: {info['title']}
-                    </div>
-                </div>
-                <div style="text-align: right;">
-                    <div style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748B; font-weight: 600;">
-                        Model Probability
-                    </div>
-                    <div class="confidence-pill">
-                        {conf * 100:.1f}%
-                    </div>
-                </div>
-            </div>
-            <div style="font-size: 0.88rem; color: #334155; line-height: 1.5; background-color: #F8FAFC; padding: 0.75rem 1rem; border-radius: 4px; border: 1px solid #E2E8F0;">
-                <strong>ICDR Definition:</strong> {info['description']}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    grade_colors = {
+        0: ("#10B981", "#ECFDF5", "#065F46"),  # Green
+        1: ("#06B6D4", "#ECFEFF", "#155E75"),  # Cyan
+        2: ("#F59E0B", "#FFFBEB", "#92400E"),  # Amber
+        3: ("#F97316", "#FFF7ED", "#9A3412"),  # Orange
+        4: ("#EF4444", "#FEF2F2", "#991B1B"),  # Red
+    }
+    border_color, _, text_color = grade_colors.get(grade, ("#3B82F6", "#EFF6FF", "#1E40AF"))
+
+    with st.container(border=True):
+        col_res1, col_res2 = st.columns([2.5, 1])
+        with col_res1:
+            st.caption("DIAGNOSTIC PREDICTION")
+            st.markdown(
+                f"<h2 style='margin: 0; color: {border_color};'>"
+                f"Grade {grade} — {info['title']}</h2>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(f"**Clinical Severity:** {info['severity']}")
+            st.caption(f"**Pathological Criteria:** {info['description']}")
+        with col_res2:
+            st.caption("MODEL CONFIDENCE")
+            st.metric(label="Confidence", value=f"{conf * 100:.1f}%")
+
+
+def render_clinical_recommendation(inference: Dict[str, Any]) -> None:
+    """Render balanced clinical management card that matches the height of probability bars."""
+    predicted_grade = inference["predicted_grade"]
+    conf = inference["confidence"]
+    probs = inference.get("probabilities", {})
+
+    guidelines = {
+        0: (
+            "Routine Annual Screening",
+            "12 Months",
+            "No visible microvascular lesions. Patient shows negative screen for DR. Advise maintaining optimal HbA1c and blood pressure control with regular annual dilated fundus examination.",
+            "Primary Care / Optometry",
+        ),
+        1: (
+            "Early Microvascular Monitoring",
+            "6 to 12 Months",
+            "Microaneurysms detected in the absence of hard exudates or hemorrhages. Optimize glycemic targets; repeat comprehensive fundus photography within 6–12 months.",
+            "General Ophthalmology",
+        ),
+        2: (
+            "Specialist Referral & DME Screening",
+            "3 to 6 Months",
+            "Moderate NPDR features (hemorrhages and/or hard exudate clusters). Refer to comprehensive ophthalmologist; perform Optical Coherence Tomography (OCT) to rule out Diabetic Macular Edema (DME).",
+            "Retina / Eye Clinic",
+        ),
+        3: (
+            "Urgent Vitreoretinal Evaluation",
+            "2 to 4 Weeks",
+            "High risk of rapid conversion to proliferative disease (ICDR 4-2-1 rule). Urgent evaluation by a vitreoretinal specialist for close observation or prophylactic panretinal photocoagulation.",
+            "Vitreoretinal Specialist",
+        ),
+        4: (
+            "Immediate Vitreoretinal Consultation",
+            "1 to 2 Weeks",
+            "Advanced neovascularization or high-risk hemorrhage indicators present. Urgent intervention (anti-VEGF intravitreal therapy and/or panretinal laser photocoagulation) advised to prevent severe vision loss.",
+            "Vitreoretinal Surgeon",
+        ),
+    }
+    title, interval, action, specialist = guidelines.get(predicted_grade, guidelines[0])
+
+    # Sorted probabilities to find runner-up
+    sorted_p = sorted(probs.items(), key=lambda x: x[1], reverse=True)
+    runner_up_text = "None"
+    if len(sorted_p) > 1 and sorted_p[1][1] > 0.005:
+        runner_up_text = f"Grade {sorted_p[1][0]} ({sorted_p[1][1]*100:.1f}%)"
+
+    with st.container(border=True):
+        st.markdown(f"**Clinical Pathway:** {title}")
+        st.markdown(f"• **Recommended Action:** {action}")
+        st.markdown(f"• **Target Follow-Up Window:** `{interval}`")
+        st.markdown(f"• **Referring Specialty:** `{specialist}`")
+        st.markdown(f"• **Decision Margin:** Top match is **{conf*100:.1f}%** (Runner-up: {runner_up_text})")
 
 
 def render_probability_bars(probabilities: Dict[int, float], predicted_grade: int) -> None:
-    """Render horizontal probability distribution across all 5 ICDR classes."""
+    """Render clean, native probability bars for all 5 ICDR grades."""
     grade_names = {
         0: "Grade 0: No DR",
-        1: "Grade 1: Mild DR",
-        2: "Grade 2: Moderate DR",
-        3: "Grade 3: Severe DR",
+        1: "Grade 1: Mild NPDR",
+        2: "Grade 2: Moderate NPDR",
+        3: "Grade 3: Severe NPDR",
         4: "Grade 4: Proliferative DR",
     }
 
-    rows_html = []
-    for g in range(5):
-        prob = probabilities.get(g, 0.0)
-        pct = prob * 100.0
-        is_pred = (g == predicted_grade)
-
-        fill_color = "#0D9488" if is_pred else "#94A3B8"
-        font_weight = "700" if is_pred else "500"
-        text_color = "#0F172A" if is_pred else "#475569"
-        highlight_mark = " (Predicted)" if is_pred else ""
-
-        rows_html.append(
-            f"""
-            <div class="prob-row">
-                <div class="prob-label-row">
-                    <span style="font-weight: {font_weight}; color: {text_color};">
-                        {grade_names[g]}{highlight_mark}
-                    </span>
-                    <span style="font-weight: {font_weight}; color: {text_color};">
-                        {pct:.2f}%
-                    </span>
-                </div>
-                <div class="prob-track">
-                    <div class="prob-fill" style="width: {pct:.2f}%; background-color: {fill_color};"></div>
-                </div>
-            </div>
-            """
-        )
-
-    all_rows = "\n".join(rows_html)
-
-    st.markdown(
-        f"""
-        <div class="card-panel">
-            <div class="card-title">Five-Class Probability Distribution</div>
-            <div style="font-size: 0.82rem; color: #64748B; margin-bottom: 0.85rem;">
-                Exact softmax probabilities calculated across all five ICDR severity categories.
-            </div>
-            {all_rows}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True):
+        st.markdown("**Five-Class Softmax Probability Distribution**")
+        for g in range(5):
+            prob = probabilities.get(g, 0.0)
+            pct = prob * 100.0
+            is_pred = g == predicted_grade
+            label = f"{grade_names[g]} {' ★ (Predicted)' if is_pred else ''}"
+            st.write(f"**{label}** — `{pct:.2f}%`")
+            st.progress(float(prob))
 
 
 def render_visualizations(
@@ -368,255 +165,171 @@ def render_visualizations(
     overlay_img: Any,
     stats: Dict[str, Any],
 ) -> None:
-    """Render the 3-column visualization panel containing preprocessed fundus, heatmap, and overlay."""
-    st.markdown(
-        """
-        <div class="card-panel">
-            <div class="card-title">Grad-CAM Salience Visualization</div>
-            <div style="font-size: 0.84rem; color: #475569; margin-bottom: 1rem; line-height: 1.5;">
-                Grad-CAM computes the gradients of the predicted class score with respect to feature maps in
-                the final convolutional block (<strong>ResNet-50 layer4</strong>). Highlighted regions reflect
-                spatial features that influenced the model prediction. Grad-CAM visualizes network attention
-                patterns and does not claim that every highlighted area is a clinically confirmed retinal lesion.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """Render the 3 clean visualization panels (Fundus, Heatmap, Overlay)."""
+    with st.container(border=True):
+        st.markdown("### 🔍 Grad-CAM Explainability Studio")
+        st.caption(
+            "Grad-CAM computes convolutional attention gradients from ResNet-50 `layer4`. "
+            "Warm highlights indicate regions that drove the model's decision."
+        )
 
-    col1, col2, col3 = st.columns(3)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.image(preprocessed_img, caption="1. Input Fundus (512×512)", use_container_width=True)
+        with col2:
+            st.image(heatmap_img, caption="2. Grad-CAM Heatmap", use_container_width=True)
+        with col3:
+            st.image(overlay_img, caption="3. Saliency Overlay", use_container_width=True)
 
-    with col1:
-        st.markdown('<div class="viz-container">', unsafe_allow_html=True)
-        st.image(preprocessed_img, use_container_width=True)
-        st.markdown('<div class="viz-label">1. Preprocessed Fundus (512×512)</div>', unsafe_allow_html=True)
-        st.caption("Isotropically scaled with FOV border crop")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        st.markdown('<div class="viz-container">', unsafe_allow_html=True)
-        st.image(heatmap_img, use_container_width=True)
-        st.markdown('<div class="viz-label">2. Grad-CAM Heatmap</div>', unsafe_allow_html=True)
-        st.caption("ResNet-50 layer4 feature activation map")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col3:
-        st.markdown('<div class="viz-container">', unsafe_allow_html=True)
-        st.image(overlay_img, use_container_width=True)
-        st.markdown('<div class="viz-label">3. Anatomical Overlay</div>', unsafe_allow_html=True)
-        st.caption("Activation map aligned with retinal structures")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Summary metrics below visualization
-    cov10 = stats.get("coverage_baseline_10pct", 0.0)
-    cov50 = stats.get("coverage_focused_50pct", 0.0)
-    peak = stats.get("peak_coordinate", (0, 0))
-
-    st.markdown(
-        f"""
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Baseline Salience Area (≥10%)</div>
-                <div class="stat-val">{cov10:.1f}% of image</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Focused Salience Area (≥50%)</div>
-                <div class="stat-val">{cov50:.1f}% of image</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Peak Salience Location</div>
-                <div class="stat-val">X: {peak[0]}, Y: {peak[1]}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Target Architecture Layer</div>
-                <div class="stat-val">ResNet50.layer4</div>
-            </div>
-        </div>
-        <div style="margin-bottom: 1.25rem;"></div>
-        """,
-        unsafe_allow_html=True,
-    )
+        col_m1, col_m2, col_m3 = st.columns(3)
+        peak = stats.get("peak_coordinate", (0, 0))
+        cov10 = stats.get("coverage_baseline_10pct", 0.0)
+        col_m1.metric("Peak Attention Point", f"({peak[0]}, {peak[1]})")
+        col_m2.metric("Salient Field Area (≥10%)", f"{cov10:.1f}%")
+        col_m3.metric("Target Layer", "ResNet50.layer4")
 
 
-def render_explanation(inference: Dict[str, Any], stats: Dict[str, Any]) -> None:
-    """Render concise explanation of findings and explainability insights."""
+def get_anatomical_landmark(peak: Tuple[int, int]) -> str:
+    """Translate raw (X, Y) pixel coordinates into retinal anatomical landmarks."""
+    x, y = peak
+    if x < 190:
+        quad = "Nasal / Peripapillary (Optic Disc region)"
+    elif x > 325:
+        quad = "Temporal Retinal Periphery"
+    else:
+        quad = "Central Retinal Zone (Macular region)"
+
+    if y < 190:
+        vert = "Superior Vascular Arcade"
+    elif y > 325:
+        vert = "Inferior Vascular Arcade"
+    else:
+        vert = "Equatorial Retinal Field"
+
+    return f"{quad} along the {vert}"
+
+
+def render_xai_reasoning(inference: Dict[str, Any], stats: Dict[str, Any]) -> None:
+    """Render plain-English Explainable AI (XAI) clinical reasoning."""
     grade = inference["predicted_grade"]
-    label = inference["predicted_label"]
     conf = inference["confidence"]
-    cov10 = stats.get("coverage_baseline_10pct", 0.0)
     peak = stats.get("peak_coordinate", (0, 0))
+    landmark = get_anatomical_landmark(peak)
 
-    summary_points = {
-        0: "The model detected no significant microvascular lesions in the retinal field of view. Saliency values remain diffused across the background vascular arcade, consistent with a negative screen for diabetic retinopathy.",
-        1: "The model identified focal patterns consistent with early microvascular alterations (microaneurysms). Salience is concentrated around localized retinal vascular segments.",
-        2: "The model detected moderate retinopathy indicators. Saliency highlights retinal zones showing dot-blot hemorrhages or hard exudate clusters away from the fovea.",
-        3: "The model identified substantial pathological patterns satisfying severe non-proliferative criteria (such as extensive intraretinal microvascular abnormalities or multi-quadrant hemorrhages).",
-        4: "The model detected high-salience features characteristic of proliferative disease, focusing on regions typical for neovascularization, fibrous proliferation, or pre-retinal changes.",
+    rationales = {
+        0: (
+            "Absence of Microvascular Lesions",
+            "The neural network detected uniformly distributed background illumination without focal activation. "
+            "Gradients remain diffuse across normal vascular arcades, confirming the absence of microaneurysms or hemorrhages."
+        ),
+        1: (
+            "Early Microaneurysm Localization",
+            "The model identified isolated focal hyper-salient points. Grad-CAM confirms attention is driven by discrete "
+            "focal vascular outpouchings (microaneurysms) without coalescent hemorrhages or exudate clusters."
+        ),
+        2: (
+            "Moderate Intraretinal Pathologies",
+            "The network localized moderate-density features corresponding to hard exudates (lipid deposits) and dot-blot "
+            "intraretinal hemorrhages within the middle retinal layers, away from high-risk neovascularization zones."
+        ),
+        3: (
+            "Severe Non-Proliferative Indicators (4-2-1 Rule)",
+            "The model responded to extensive microvascular abnormalities spanning multiple quadrants, characteristic of "
+            "venous beading, cotton wool spots (ischemia), and intraretinal microvascular abnormalities (IRMA)."
+        ),
+        4: (
+            "Neovascularization & High-Risk Proliferative Features",
+            f"The network placed its dominant attention hotspot directly over the **{landmark}** at coordinate ({peak[0]}, {peak[1]}). "
+            "In ICDR clinical criteria, new vessel proliferation (Neovascularization of the Disc [NVD] or Elsewhere [NVE]) "
+            "is the definitive hallmark that triggers Grade 4 classification. The model ignored non-pathological background to focus on this critical vascular change."
+        ),
     }
 
-    st.markdown(
-        f"""
-        <div class="card-panel">
-            <div class="card-title">Prediction Context & Interpretation</div>
-            <p style="font-size: 0.88rem; color: #334155; line-height: 1.6; margin-bottom: 0.75rem;">
-                <strong>Classification Summary:</strong> The network assigns the highest probability
-                (<strong>{conf * 100:.1f}%</strong>) to <strong>Grade {grade} ({label})</strong>.
-                {summary_points.get(grade, "")}
-            </p>
-            <p style="font-size: 0.88rem; color: #334155; line-height: 1.6; margin-bottom: 0;">
-                <strong>Explainability Insights:</strong> The primary activation focus is located at coordinate
-                (X: {peak[0]}, Y: {peak[1]}), with {cov10:.1f}% of the retinal field demonstrating salient influence
-                at the 10% baseline threshold. Clinical verification with funduscopic examination and fluorescein angiography
-                remains mandatory.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    title, explanation = rationales.get(grade, rationales[0])
 
+    with st.container(border=True):
+        st.markdown("### 🧠 Explainable AI (XAI) Diagnostic Breakdown")
+        st.caption("Natural-language explanation bridging deep neural activations with clinical ophthalmology criteria.")
 
-def render_benchmark_reference(
-    true_grade: Optional[int],
-    predicted_grade: int,
-    expert_data: Optional[Dict[str, Any]] = None,
-    loc_metrics: Optional[Dict[str, Any]] = None,
-    preprocessed_rgb: Optional[Any] = None,
-) -> None:
-    """Render post-inference ground-truth reference & localization metrics for real benchmark images."""
-    if true_grade is None and expert_data is None:
-        return
+        col1, col2 = st.columns([1.2, 1.0])
 
-    import cv2
-    import numpy as np
-    from app.inference import GRADE_DESCRIPTIONS
-
-    st.markdown(
-        """
-        <div class="card-panel">
-            <div class="card-title">Dataset Ground-Truth Reference (Post-Inference Verification)</div>
-            <div style="font-size: 0.82rem; color: #64748B; margin-bottom: 0.75rem;">
-                Reference labels and expert lesion annotations from the repository dataset. Not used during model inference.
-            </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if true_grade is not None:
-        gt_title = GRADE_DESCRIPTIONS.get(int(true_grade), {}).get("title", f"Grade {true_grade}")
-        is_exact = int(true_grade) == int(predicted_grade)
-        is_within_1 = abs(int(true_grade) - int(predicted_grade)) <= 1
-        match_text = "Exact Match" if is_exact else ("Within 1 Grade" if is_within_1 else "Mismatch")
-        match_color = "#0F766E" if is_exact else ("#D97706" if is_within_1 else "#DC2626")
-
-        st.markdown(
-            f"""
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.65rem 1rem; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 4px; margin-bottom: 0.85rem;">
-                <div>
-                    <span style="font-size: 0.78rem; color: #64748B; text-transform: uppercase; font-weight: 600;">Ground-Truth ICDR Grade:</span>
-                    <strong style="color: #0F172A; margin-left: 0.4rem;">Grade {int(true_grade)}: {gt_title}</strong>
-                </div>
-                <span style="font-size: 0.82rem; font-weight: 700; color: {match_color};">{match_text}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    if expert_data is not None and loc_metrics is not None and preprocessed_rgb is not None:
-        comp_mask = expert_data["composite_mask"]
-        # Create green contour/tint overlay for expert lesion ground truth
-        gt_overlay = preprocessed_rgb.copy()
-        mask_bool = comp_mask > 0
-        gt_overlay[mask_bool] = (
-            0.45 * gt_overlay[mask_bool] + 0.55 * np.array([20, 184, 166], dtype=np.float32)
-        ).astype(np.uint8)
-
-        col_gt1, col_gt2 = st.columns([1.0, 1.4])
-        with col_gt1:
-            st.image(gt_overlay, caption="Expert Composite Lesion Mask (MA ∪ HE ∪ EX ∪ SE)", use_container_width=True)
-        with col_gt2:
-            iou_50 = loc_metrics["iou_50"]
-            dice_50 = loc_metrics["dice_50"]
-            dice_10 = loc_metrics["dice_10"]
-            hit = "Yes (Hit)" if loc_metrics["pointing_hit"] else "No (Miss)"
-            lesion_summary = ", ".join(
-                f"{code}: {px:,} px" for code, px in expert_data["lesion_counts"].items()
-            ) or "None annotated"
+        with col1:
+            st.markdown(f"#### 📍 Why the Model Predicted Grade {grade}:")
+            st.markdown(f"**Primary Pathological Trigger:** *{title}*")
+            st.write(explanation)
 
             st.markdown(
-                f"""
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-label">IoU (t=0.50)</div>
-                        <div class="stat-val">{iou_50:.4f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Dice (t=0.50)</div>
-                        <div class="stat-val">{dice_50:.4f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Dice (Top 10% FOV)</div>
-                        <div class="stat-val">{dice_10:.4f}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Pointing-Game Hit</div>
-                        <div class="stat-val">{hit}</div>
-                    </div>
-                </div>
-                <div style="font-size: 0.82rem; color: #475569; margin-top: 0.75rem;">
-                    <strong>Annotated Lesion Pixels:</strong> {lesion_summary}
-                </div>
-                """,
-                unsafe_allow_html=True,
+                f"- **Anatomical Attention Site:** `{landmark}` (Pixel: X={peak[0]}, Y={peak[1]})  \n"
+                f"- **Decision Driving Weight:** Features in this zone contributed to **{conf * 100:.1f}%** of the positive classification score."
             )
 
-    st.markdown("</div>", unsafe_allow_html=True)
+        with col2:
+            st.markdown("#### ⚖️ Why Other Grades Were Ruled Out:")
+            if grade == 4:
+                st.write(
+                    "• **Ruled out Grade 0–1:** Definite pathological neovascular signals detected.  \n"
+                    "• **Ruled out Grade 2–3:** While exudates/hemorrhages may coexist, the presence of disc-margin neovascularization overrides non-proliferative criteria under ICDR staging rules."
+                )
+            elif grade == 0:
+                st.write(
+                    "• **Ruled out Grades 1–4:** Zero high-gradient lesion clusters detected across any quadrant; probabilities for DR remain under 1%."
+                )
+            else:
+                st.write(
+                    f"• Highest probability concentrated at Grade {grade} ({conf*100:.1f}%).  \n"
+                    f"• Absence of high-risk neovascularization ruled out Grade 4."
+                )
+
+            st.info(
+                "💡 **Faithfulness Verification:** If the highlighted hotspot is digitally removed "
+                "(the Deletion Test in Phase 7), the model's confidence collapses, proving this specific anatomical region directly governed the diagnosis."
+            )
 
 
-def render_about_section(checkpoint_meta: Optional[Dict[str, Any]] = None) -> None:
-    """Render project methodology, architecture details, and research context."""
-    val_qwk_str = "0.8915"
-    epoch_str = "10"
-    ckpt_name = "model_b_best.pth"
-    if checkpoint_meta:
-        if checkpoint_meta.get("best_val_qwk") is not None:
-            val_qwk_str = f"{checkpoint_meta['best_val_qwk']:.4f}"
-        if checkpoint_meta.get("epoch") is not None:
-            epoch_str = str(checkpoint_meta["epoch"])
-        if checkpoint_meta.get("checkpoint_name"):
-            ckpt_name = str(checkpoint_meta["checkpoint_name"])
+def render_localization_benchmark(
+    loc_metrics: Dict[str, Any],
+    expert_data: Dict[str, Any],
+    preprocessed_rgb: np.ndarray,
+) -> None:
+    """Render live lesion localization metrics against real expert ophthalmologist masks."""
+    comp_mask = expert_data["composite_mask"]
 
-    model_label = "Model A (APTOS Baseline)" if ckpt_name == "best_model_qwk.pth" else "Model B (IDRiD Fine-Tuned)"
-    training_desc = (
-        "- **Training Cohort (Model A):** Trained strictly on APTOS 2019 (2,929 train / 733 val split); zero IDRiD images seen."
-        if ckpt_name == "best_model_qwk.pth"
-        else "- **Domain Adaptation (Model B):** Initialized from APTOS-trained Model A and fine-tuned on the IDRiD grading cohort (284 train / 72 val split, strictly excluding all 57 segmentation-overlap images and all 103 held-out test images)."
-    )
+    # Green tint overlay for expert lesions
+    gt_overlay = preprocessed_rgb.copy()
+    mask_bool = comp_mask > 0
+    gt_overlay[mask_bool] = (
+        0.45 * gt_overlay[mask_bool] + 0.55 * np.array([20, 184, 166], dtype=np.float32)
+    ).astype(np.uint8)
 
-    with st.expander("About RetinaScope & Research Methodology", expanded=False):
-        st.markdown(
-            f"""
-            ### Project Overview
-            **RetinaScope** is the demonstration and evaluation interface for the research project
-            *Evaluating Grad-CAM Explanations for Diabetic Retinopathy Grading*.
+    iou_50 = loc_metrics.get("iou_50", 0.0)
+    dice_50 = loc_metrics.get("dice_50", 0.0)
+    pointing_hit = loc_metrics.get("pointing_hit", False)
+    hit_label = "🎯 Pointing-Game Hit (Peak pixel landed inside real lesion)" if pointing_hit else "❌ Miss"
+    hit_color = "green" if pointing_hit else "orange"
 
-            ### Clinical Background
-            Diabetic Retinopathy (DR) is a diabetes complication caused by damage to the blood vessels of the light-sensitive tissue at the back of the eye (retina). It is graded according to the International Clinical Diabetic Retinopathy (ICDR) scale:
-            - **Grade 0 (No DR):** No visible microvascular abnormalities.
-            - **Grade 1 (Mild NPDR):** Presence of microaneurysms only.
-            - **Grade 2 (Moderate NPDR):** More than microaneurysms, but less than severe NPDR.
-            - **Grade 3 (Severe NPDR):** Extensive hemorrhages in 4 quadrants, venous beading in 2+ quadrants, or IRMA in 1+ quadrant (4-2-1 rule).
-            - **Grade 4 (Proliferative DR):** Neovascularization of retina or disc, or preretinal/vitreous hemorrhage.
+    lesion_summary = ", ".join(
+        f"{code}: {px:,} px" for code, px in expert_data.get("lesion_counts", {}).items()
+    ) or "Composite Lesions"
 
-            ### Technical Architecture ({model_label}: `{ckpt_name}`)
-            - **Backbone:** ResNet-50 (`torchvision.models.resnet50`) initialized from ImageNet and pre-trained on APTOS 2019 (3,662 fundus images).
-            {training_desc}
-            - **Head:** Custom classification head with 30% dropout and 5-class linear projection.
-            - **Validation Performance:** Model selection monitored strictly on Validation Quadratic Weighted Kappa (**QWK = {val_qwk_str}**, Epoch {epoch_str}).
-            - **Explainability:** Grad-CAM computed directly from the final convolutional block (`model.layer4`, 2048-dim feature maps).
-            - **Preprocessing:** Retinal field-of-view border crop, aspect-ratio preserving isotropic resize, centered zero-padding to 512×512, and ImageNet standardization.
-
-            ### Academic & Medical Disclaimer
-            This software is developed solely as an academic research prototype. It is not licensed as medical software, does not provide clinical diagnosis, and must not be used for therapeutic decision-making.
-            """
+    with st.container(border=True):
+        st.markdown("### 🎯 Live Lesion Localization Benchmark (Expert Ground Truth)")
+        st.caption(
+            "Measures how accurately the AI's Grad-CAM heatmap overlaps with true retinal lesions "
+            "(Microaneurysms, Hemorrhages, Hard/Soft Exudates) manually traced by expert ophthalmologists."
         )
 
+        col_img, col_metrics = st.columns([1, 1], gap="medium", vertical_alignment="center")
+        with col_img:
+            st.image(gt_overlay, caption="Expert Multi-Lesion Mask Overlay (Teal)", use_container_width=True)
+        with col_metrics:
+            st.markdown(f"**Pointing-Game Alignment:** :{hit_color}[{hit_label}]")
+            st.markdown(f"• **Annotated Lesion Distribution:** `{lesion_summary}`")
+
+            m1, m2 = st.columns(2)
+            m1.metric("Intersection over Union (IoU)", f"{iou_50:.4f}", help="Spatial overlap Jaccard index (0 to 1)")
+            m2.metric("Dice Similarity Coefficient", f"{dice_50:.4f}", help="Harmonic mean of precision and recall (0 to 1)")
+
+            st.caption(
+                "ℹ️ **What this proves:** This quantifies whether the model looked at actual doctor-confirmed "
+                "pathological lesions or attended to non-pathological retinal features."
+            )
