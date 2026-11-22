@@ -12,13 +12,17 @@
 
 ---
 
-## 1. Research Overview
+1. Research Overview
 
-Deep learning models have achieved high diagnostic accuracy in automated Diabetic Retinopathy (DR) grading using digital fundus photographs. However, their clinical adoption requires reliable and interpretable visual explanations. Although Gradient-weighted Class Activation Mapping (**Grad-CAM**) is widely used to generate visual saliency maps, visual interpretability alone does not establish the reliability of an explanation. Therefore, this study independently investigates two key dimensions of explainability:
+Deep learning models have demonstrated substantial potential in automated Diabetic Retinopathy (DR) grading from digital fundus photographs, achieving high diagnostic performance. However, translating these models into clinically reliable decision-support systems requires more than predictive accuracy; it demands explanations that are both clinically meaningful and faithful to the model's underlying decision-making process.
 
-1. **Localization (Plausibility / Ground-Truth Overlap):** Assesses whether Grad-CAM heatmaps spatially correspond to pathological retinal lesions, including microaneurysms, haemorrhages, hard exudates, and soft exudates, annotated by expert ophthalmologists. Localization performance is quantified using **Intersection over Union (IoU)** and the **Dice Similarity Coefficient (DSC)**.
+Although Gradient-weighted Class Activation Mapping (Grad-CAM) is widely employed to visualize class-discriminative image regions, a visually convincing saliency map does not necessarily indicate that the highlighted regions are responsible for the model's prediction. To address this limitation, this study systematically distinguishes and evaluates two complementary dimensions of explainability:
 
-2. **Faithfulness (Decision Fidelity):** Determines whether the regions highlighted by Grad-CAM genuinely contribute to the CNN's classification decisions. Faithfulness is evaluated using the **Deletion Test**, which measures the reduction in target-class prediction confidence (\(\Delta p\)) as highly salient regions are progressively ablated. The results are benchmarked against an area-matched **random-region control** to determine whether Grad-CAM-guided deletion produces a greater confidence reduction than random deletion.
+Localization (Plausibility / Ground-Truth Correspondence): Investigates whether Grad-CAM-generated activation maps spatially align with clinically relevant retinal abnormalities identified through expert ophthalmologist annotations. The evaluation considers four major DR-associated lesions: microaneurysms, haemorrhages, hard exudates, and soft exudates. Spatial correspondence is quantitatively assessed using Intersection over Union (IoU) and the Dice Similarity Coefficient (DSC), providing complementary measures of overlap between predicted localization regions and expert-annotated lesion masks.
+
+Faithfulness (Decision Fidelity): Examines whether the regions identified as salient by Grad-CAM genuinely contribute to the CNN's target-class prediction, rather than merely appearing visually relevant. This is assessed using a perturbation-based Deletion Test, in which highly activated image regions are progressively ablated and the corresponding reduction in prediction confidence ((\Delta p)) is measured. To establish a meaningful performance baseline, Grad-CAM-guided deletion is compared against an area-matched random-region control, ensuring that both strategies remove equivalent image areas under identical perturbation conditions.
+
+By evaluating localization and faithfulness independently, this study aims to determine whether Grad-CAM explanations are simultaneously aligned with expert-defined retinal pathology and functionally relevant to the model's diagnostic decisions. Ultimately, the objective is to move beyond visual plausibility towards a more rigorous, quantitative, and clinically relevant evaluation of explainability in deep learning-based DR grading.
 
 ### Core Research Question
 > **Does good localization imply good faithfulness in Grad-CAM explanations across all five ICDR diabetic retinopathy grades?**
