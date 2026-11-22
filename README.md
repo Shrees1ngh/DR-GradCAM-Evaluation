@@ -14,10 +14,11 @@
 
 ## 1. Research Overview
 
-Deep learning models achieve high diagnostic accuracy in Diabetic Retinopathy (DR) grading from digital fundus photography. However, clinical adoption requires interpretable visual evidence. While Gradient-weighted Class Activation Mapping (**Grad-CAM**) is widely deployed to provide visual saliency maps, literature frequently conflates **localization** with **faithfulness**:
+Deep learning models have achieved high diagnostic accuracy in automated Diabetic Retinopathy (DR) grading using digital fundus photographs. However, their clinical adoption requires reliable and interpretable visual explanations. Although Gradient-weighted Class Activation Mapping (**Grad-CAM**) is widely used to generate visual saliency maps, visual interpretability alone does not establish the reliability of an explanation. Therefore, this study independently investigates two key dimensions of explainability:
 
-1. **Localization (Plausibility / Ground-Truth Overlap):** Does the heatmap highlight pathological retinal lesions (microaneurysms, haemorrhages, hard exudates, soft exudates) marked by expert ophthalmologists? Measured via **Intersection over Union (IoU)** and the **Dice Similarity Coefficient**.
-2. **Faithfulness (Decision Fidelity):** Did the highlighted pixels actually drive the CNN's classification score? Evaluated via the functional **Deletion Test** (measuring the drop in prediction confidence $\Delta p$ when salient regions are ablated, bench-marked against an area-matched **random-region control**).
+1. **Localization (Plausibility / Ground-Truth Overlap):** Assesses whether Grad-CAM heatmaps spatially correspond to pathological retinal lesions, including microaneurysms, haemorrhages, hard exudates, and soft exudates, annotated by expert ophthalmologists. Localization performance is quantified using **Intersection over Union (IoU)** and the **Dice Similarity Coefficient (DSC)**.
+
+2. **Faithfulness (Decision Fidelity):** Determines whether the regions highlighted by Grad-CAM genuinely contribute to the CNN's classification decisions. Faithfulness is evaluated using the **Deletion Test**, which measures the reduction in target-class prediction confidence (\(\Delta p\)) as highly salient regions are progressively ablated. The results are benchmarked against an area-matched **random-region control** to determine whether Grad-CAM-guided deletion produces a greater confidence reduction than random deletion.
 
 ### Core Research Question
 > **Does good localization imply good faithfulness in Grad-CAM explanations across all five ICDR diabetic retinopathy grades?**
